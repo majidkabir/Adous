@@ -1,4 +1,4 @@
-package app.majid.Adous;
+package app.majid.adous;
 
 import org.springframework.boot.test.context.TestConfiguration;
 

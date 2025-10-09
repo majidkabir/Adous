@@ -1,0 +1,6 @@
+# File and patterns to ignore during synchronization
+# Each line specifies a pattern to ignore
+# Lines starting with '#' are comments and will be ignored
+# Blank lines are also ignored
+# Example patterns:
+//TODO: Add specific patterns to ignore
