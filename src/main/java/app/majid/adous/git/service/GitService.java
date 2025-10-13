@@ -34,6 +34,8 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -185,7 +187,7 @@ public class GitService {
         List<DbObject> dbObjects = new ArrayList<>();
 
         List<DiffEntry> diff = getDiff(commitish, getTag(dbName));
-        diff.parallelStream().forEach(e -> {
+        diff.forEach(e -> {
             if (newOrModifiedInBaseAndNotExistInDiff(e, commitish)) {
                 dbObjects.add(newDbObject(e.getNewPath(), getFileContent(e.getNewId().toObjectId()).orElse(null)));
             }
@@ -205,7 +207,7 @@ public class GitService {
     }
 
     public ObjectId applyChanges(List<RepoObject> changes, String commitMessage, String branchRef)
-            throws IOException, GitAPIException {
+            throws IOException {
 
         try (ObjectInserter inserter = repo.newObjectInserter();
              RevWalk revWalk = new RevWalk(repo)) {
@@ -366,10 +368,9 @@ public class GitService {
             throw new IllegalArgumentException("Invalid path: " + path);
         }
 
-        // Extract parts directly without creating intermediate strings
         String type = path.substring(thirdSlash + 1, secondSlash);
         String schema = path.substring(secondSlash + 1, lastSlash);
-        String name = path.substring(lastSlash + 1, path.length() - 4); // Remove .sql extension
+        String name = path.substring(lastSlash + 1, path.length() - 4);
 
         return new DbObject(schema, name, DbObjectType.valueOf(type.toUpperCase()), definition);
     }

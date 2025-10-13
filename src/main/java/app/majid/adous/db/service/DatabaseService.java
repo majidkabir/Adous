@@ -48,6 +48,8 @@ public class DatabaseService {
                 JOIN sys.schemas s ON o.schema_id = s.schema_id
                 JOIN sys.sql_modules m ON o.object_id = m.object_id
                 WHERE o.type IN ('P', 'FN', 'IF', 'TF', 'FS', 'FT', 'V', 'TR')
+                    AND o.is_ms_shipped = 0
+                    AND s.name != 'sys'
                 """, (rs, rowNum) ->
                 new DbObject(
                         rs.getString("schema_name"),
@@ -64,6 +66,16 @@ public class DatabaseService {
 
         ResourceDatabasePopulator populator = new ResourceDatabasePopulator();
         populator.setSeparator("GO");
+
+        dbChanges.stream()
+                .map(DbObject::schema)
+                .distinct()
+                .forEach(schema -> {
+                    jdbcTemplate.execute(
+                            "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '%s') " +
+                                    "EXEC('CREATE SCHEMA [%s]')".formatted(schema, schema)
+                    );
+                });
 
         dbChanges.forEach(change -> {
             populator.addScript(toResource(getDropQuery(change)));
