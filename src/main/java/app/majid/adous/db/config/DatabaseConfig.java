@@ -8,6 +8,7 @@ import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
 import javax.sql.DataSource;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.logging.Logger;
 
 @Configuration
@@ -37,6 +38,8 @@ public class DatabaseConfig {
         routing.setTargetDataSources(dataSources);
 
         DatabaseContextHolder.setAvailableDbs(dbs.keySet());
+        // Set default DB only for app startup
+        DatabaseContextHolder.setCurrentDb(dbs.keySet().iterator().next());
 
         return routing;
     }

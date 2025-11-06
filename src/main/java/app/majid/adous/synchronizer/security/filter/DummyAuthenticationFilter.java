@@ -13,7 +13,7 @@ import java.io.IOException;
 @Component
 public class DummyAuthenticationFilter extends OncePerRequestFilter {
 
-    @Value("${auth.token}")
+    @Value("${spring.application.authentication.token}")
     private String validToken;
 
     @Override

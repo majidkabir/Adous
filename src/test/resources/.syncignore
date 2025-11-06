@@ -1,0 +1,4 @@
+**/PROCEDURE/*/prefix1*.sql
+**/TRIGGER/*/prefix2*.sql
+**/VIEW/*/prefix3*.sql
+**/FUNCTION/*/prefix4*.sql

@@ -22,14 +22,17 @@ public class DatabaseRepositorySynchronizerService {
     private final GitService gitService;
     private final DatabaseService databaseService;
     private final SqlEquivalenceCheckerService sqlEquivalenceCheckerService;
+    private final SynchronizerIgnoreService ignoreService;
 
     public DatabaseRepositorySynchronizerService(
             GitService gitService,
             DatabaseService databaseService,
-            SqlEquivalenceCheckerService sqlEquivalenceCheckerService) {
+            SqlEquivalenceCheckerService sqlEquivalenceCheckerService,
+            SynchronizerIgnoreService ignoreService) {
         this.gitService = gitService;
         this.databaseService = databaseService;
         this.sqlEquivalenceCheckerService = sqlEquivalenceCheckerService;
+        this.ignoreService = ignoreService;
     }
 
     public String syncRepoToDb(String commitish, String dbName, boolean dryRun, boolean force)
@@ -72,8 +75,10 @@ public class DatabaseRepositorySynchronizerService {
 
         List<RepoObject> repoChanges = dbObjects.parallelStream()
                 .map(o -> dbObjectToRepoObject(o, gitService.getBasePath()))
+                .filter(o -> !ignoreService.shouldIgnore(o.path()))
                 .toList();
 
+        gitService.createInitialCommit();
         gitService.applyChangesAndPush(repoChanges, "Repo initialized with DB: " + dbName);
 
         return repoChanges.toString();

@@ -56,15 +56,19 @@ public class GitService {
     private final CredentialsProvider creds;
     private final String baseRootPath;
     private final String diffRootPath;
+    private final PersonIdent committerIdent;
+    private final String defaultBranchRef;
 
     public GitService(GitProperties gitProperties) throws IOException, GitAPIException {
+        this.committerIdent = new PersonIdent(gitProperties.commitUsername(), gitProperties.commitEmail());
         this.localMode = gitProperties.localModeForTest();
         this.baseRootPath = gitProperties.baseRootPath();
         this.diffRootPath = gitProperties.diffRootPath() + "/" + gitProperties.prefixPath();
+        this.defaultBranchRef = Constants.R_HEADS + gitProperties.defaultBranch();
 
         this.creds = new UsernamePasswordCredentialsProvider("token", gitProperties.token());
 
-        var workDir = createTempDirectory("adous-repo").toFile();
+        var workDir = createTempDirectory("adous-repo-").toFile();
 
         if (!localMode) {
             Git.cloneRepository()
@@ -76,7 +80,7 @@ public class GitService {
                     .close();
         }
 
-        this.repo =  new FileRepositoryBuilder()
+        this.repo = new FileRepositoryBuilder()
                 .setGitDir(workDir)
                 .setBare()
                 .build();
@@ -291,15 +295,14 @@ public class GitService {
 
     public ObjectId applyChangesAndPush(List<RepoObject> changes, String commitMessage)
             throws IOException, GitAPIException {
-        String branchRef = Constants.R_HEADS + "main";
-        ObjectId commitId = applyChanges(changes, commitMessage, branchRef);
+        ObjectId commitId = applyChanges(changes, commitMessage, defaultBranchRef);
 
         if (localMode) return  commitId;
 
         try (Git git = new Git(repo)) {
             git.push()
                     .setRemote("origin")
-                    .add(branchRef)
+                    .add(defaultBranchRef)
                     .setCredentialsProvider(creds)
                     .call();
         }
@@ -373,5 +376,28 @@ public class GitService {
         String name = path.substring(lastSlash + 1, path.length() - 4);
 
         return new DbObject(schema, name, DbObjectType.valueOf(type.toUpperCase()), definition);
+    }
+
+    public void createInitialCommit() throws IOException {
+        try (ObjectInserter inserter = repo.newObjectInserter()) {
+            DirCache index = DirCache.newInCore();
+            ObjectId treeId = index.writeTree(inserter);
+
+            CommitBuilder commitBuilder = new CommitBuilder();
+            commitBuilder.setTreeId(treeId);
+            commitBuilder.setMessage("Initial commit for having default branch");
+            commitBuilder.setAuthor(committerIdent);
+            commitBuilder.setCommitter(committerIdent);
+
+            ObjectId commitId = inserter.insert(commitBuilder);
+            inserter.flush();
+
+            RefUpdate refUpdate = repo.updateRef(defaultBranchRef);
+            refUpdate.setNewObjectId(commitId);
+            refUpdate.update();
+
+            RefUpdate headUpdate = repo.updateRef(Constants.HEAD, true);
+            headUpdate.link(defaultBranchRef);
+        }
     }
 }

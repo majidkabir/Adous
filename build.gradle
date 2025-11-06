@@ -10,7 +10,7 @@ description = 'Service that manage multiple instance of a DB'
 
 java {
 	toolchain {
-		languageVersion = JavaLanguageVersion.of(21)
+		languageVersion = JavaLanguageVersion.of(25)
 	}
 }
 
@@ -24,7 +24,6 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-web'
-
     implementation 'org.eclipse.jgit:org.eclipse.jgit:7.3.0.202506031305-r'
 
     runtimeOnly 'com.microsoft.sqlserver:mssql-jdbc'
@@ -33,6 +32,7 @@ dependencies {
 	testImplementation 'org.springframework.boot:spring-boot-testcontainers'
 	testImplementation 'org.springframework.security:spring-security-test'
 	testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:mssqlserver'
 
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

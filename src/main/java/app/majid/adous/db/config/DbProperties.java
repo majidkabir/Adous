@@ -8,4 +8,8 @@ import java.util.Map;
 
 @Validated
 @ConfigurationProperties(prefix = "spring.datasources")
-public record DbProperties(Map<String, DbConfig> dbs) {}
+public record DbProperties(Map<String, DbConfig> dbs) {
+    public DbProperties(Map<String, DbConfig> dbs) {
+        this.dbs = dbs != null ? dbs : Map.of();
+    }
+}

@@ -1,0 +1,66 @@
+CREATE DATABASE dbtest1;
+
+USE dbtest1;
+
+CREATE TABLE table1 (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+
+CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 1 executed' AS Message; END;
+CREATE PROCEDURE proc2 AS BEGIN SELECT 'Procedure 2 executed' AS Message; END;
+CREATE PROCEDURE prefix1_proc1 AS BEGIN SELECT 'Prefix1 procedure 1 executed' AS Message; END;
+CREATE PROCEDURE prefix2_proc1 AS BEGIN SELECT 'Prefix2 procedure 1 executed' AS Message; END;
+CREATE PROCEDURE prefix3_proc1 AS BEGIN SELECT 'Prefix3 procedure 1 executed' AS Message; END;
+CREATE PROCEDURE prefix4_proc1 AS BEGIN SELECT 'Prefix4 procedure 1 executed' AS Message; END;
+
+CREATE TRIGGER trigger1 ON table1 AFTER INSERT AS BEGIN INSERT INTO table1 (name) VALUES ('test name 1'); END;
+CREATE TRIGGER trigger2 ON table1 AFTER UPDATE AS BEGIN INSERT INTO table1 (name) VALUES ('test name 2'); END;
+CREATE TRIGGER prefix1_trigger1 ON table1 AFTER DELETE AS BEGIN INSERT INTO table1 (name) VALUES ('test name prefix 1'); END;
+CREATE TRIGGER prefix2_trigger1 ON table1 AFTER DELETE AS BEGIN INSERT INTO table1 (name) VALUES ('test name prefix 2'); END;
+CREATE TRIGGER prefix3_trigger1 ON table1 AFTER DELETE AS BEGIN INSERT INTO table1 (name) VALUES ('test name prefix 3'); END;
+CREATE TRIGGER prefix4_trigger1 ON table1 AFTER DELETE AS BEGIN INSERT INTO table1 (name) VALUES ('test name prefix 4'); END;
+
+CREATE FUNCTION func1() RETURNS INT BEGIN RETURN 1 END;
+CREATE FUNCTION func2() RETURNS INT BEGIN RETURN 2 END;
+CREATE FUNCTION prefix1_func1() RETURNS INT BEGIN RETURN 11 END;
+CREATE FUNCTION prefix2_func1() RETURNS INT BEGIN RETURN 12 END;
+CREATE FUNCTION prefix3_func1() RETURNS INT BEGIN RETURN 13 END;
+CREATE FUNCTION prefix4_func1() RETURNS INT BEGIN RETURN 14 END;
+
+CREATE VIEW view1 AS SELECT id FROM table1;
+CREATE VIEW view2 AS SELECT id, name FROM table1;
+CREATE VIEW prefix1_view1 AS SELECT id, name, 'p1' AS prefix FROM table1;
+CREATE VIEW prefix2_view1 AS SELECT id, name, 'p2' AS prefix FROM table1;
+CREATE VIEW prefix3_view1 AS SELECT id, name, 'p3' AS prefix FROM table1;
+CREATE VIEW prefix4_view1 AS SELECT id, name, 'p4' AS prefix FROM table1;
+
+CREATE DATABASE dbtest2;
+
+USE dbtest2;
+
+CREATE TABLE table1 (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+
+CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 11 executed' AS Message; END;
+CREATE PROCEDURE proc2 AS BEGIN SELECT 'Procedure 2 executed' AS Message; END;
+CREATE PROCEDURE proc3 AS BEGIN SELECT 'Procedure 3 executed' AS Message; END;
+
+CREATE TRIGGER trigger1 ON table1 AFTER INSERT AS
+BEGIN
+    INSERT INTO table1 (name) VALUES ('test name 11');
+END;
+
+CREATE TRIGGER trigger2 ON table1 AFTER UPDATE AS
+BEGIN
+    INSERT INTO table1 (name) VALUES ('test name 2');
+END;
+
+CREATE TRIGGER trigger3 ON table1 AFTER DELETE AS
+BEGIN
+    INSERT INTO table1 (name) VALUES ('test name 3');
+END;
+
+CREATE FUNCTION func1() RETURNS INT BEGIN RETURN 1 END;
+CREATE FUNCTION func2() RETURNS INT BEGIN RETURN 2 END;
+CREATE FUNCTION func3() RETURNS INT BEGIN RETURN 3 END;
+
+CREATE VIEW view1 AS SELECT id FROM table1;
+CREATE VIEW view2 AS SELECT name FROM table1;
+CREATE VIEW view3 AS SELECT id, name FROM table1;

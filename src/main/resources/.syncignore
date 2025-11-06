@@ -3,4 +3,8 @@
 # Lines starting with '#' are comments and will be ignored
 # Blank lines are also ignored
 # Example patterns:
-//TODO: Add specific patterns to ignore
+#
+# Ignore all STORED PROCEDURE files with names starting with 'prefix'
+# **/PROCEDURE/*/prefix*.sql
+#
+
