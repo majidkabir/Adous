@@ -107,4 +107,19 @@ public class GitRepository {
     public boolean tagExists(String tagRef) throws IOException {
         return repo.findRef(tagRef) != null;
     }
+
+    // Add tag to a specified commit
+    public void addTagToCommit(String tagName, String commitish) throws IOException {
+        ObjectId commitId = repo.resolve(commitish);
+        if (commitId == null) {
+            throw new IOException("Commit " + commitish + " not found.");
+        }
+        RefUpdate refUpdate = repo.updateRef(Constants.R_TAGS + tagName);
+        refUpdate.setNewObjectId(commitId);
+        refUpdate.setForceUpdate(true);
+        RefUpdate.Result result = refUpdate.update();
+        if (result != RefUpdate.Result.NEW && result != RefUpdate.Result.FORCED && result != RefUpdate.Result.NO_CHANGE) {
+            throw new IOException("Failed to create tag " + tagName + ": " + result.name());
+        }
+    }
 }

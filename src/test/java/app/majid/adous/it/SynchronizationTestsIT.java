@@ -2,10 +2,8 @@ package app.majid.adous.it;
 
 import app.majid.adous.git.service.GitCommitService;
 import app.majid.adous.git.service.GitService;
-import app.majid.adous.synchronizer.model.RepoObject;
 import app.majid.adous.synchronizer.service.DatabaseRepositorySynchronizerService;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.lib.Constants;
 import org.graalvm.collections.Pair;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -14,15 +12,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
-class InitRepoTestsIT {
+class SynchronizationTestsIT {
 
     @Autowired
     DatabaseRepositorySynchronizerService synchronizerService;
@@ -37,6 +33,43 @@ class InitRepoTestsIT {
     void testSynchronizerServiceNotNull() throws GitAPIException, IOException {
         synchronizerService.initRepo("db1");
         assertInitializedRepoState();
+
+        synchronizerService.syncDbToRepo("db2", false);
+        assertDb2SyncedRepoState();
+    }
+
+    private void assertDb2SyncedRepoState() {
+        assertAll("Checking existence of all non-ignored database objects in git repo",
+                Stream.of(
+                        "diff/db2/PROCEDURE/dbo/proc1.sql",
+                        "diff/db2/PROCEDURE/dbo/prefix4_proc1.sql",
+                        "diff/db2/TRIGGER/dbo/trigger1.sql",
+                        "diff/db2/VIEW/dbo/view1.sql",
+                        "diff/db2/FUNCTION/dbo/func1.sql"
+                ).map(this::assertFileExists).toArray(Executable[]::new)
+        );
+
+        assertAll("Checking non-existence of all ignored database objects in git repo",
+                Stream.of(
+                        "diff/db2/PROCEDURE/dbo/prefix1_proc2.sql",
+                        "diff/db2/VIEW/dbo/prefix3_view2.sql",
+                        "diff/db2/TRIGGER/dbo/prefix2_trigger1.sql",
+                        "diff/db2/FUNCTION/dbo/prefix4_func2.sql"
+                ).map(this::assertFileNotExists).toArray(Executable[]::new)
+        );
+
+        assertAll("Checking definitions of selected database objects in git repo",
+                Stream.of(
+                        Pair.create("diff/db2/PROCEDURE/dbo/proc1.sql", """
+                                SET ANSI_NULLS ON;
+                                GO
+                                SET QUOTED_IDENTIFIER ON;
+                                GO
+                                CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 11 executed' AS Message; END
+                                GO"""),
+                        Pair.create("diff/db2/PROCEDURE/dbo/prefix3_proc1", "")
+                ).map(this::assertFileContent).toArray(Executable[]::new)
+        );
     }
 
     private void assertInitializedRepoState() {

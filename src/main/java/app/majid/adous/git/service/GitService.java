@@ -90,11 +90,21 @@ public class GitService {
         return dbObjects;
     }
 
-    public ObjectId applyChangesAndPush(List<RepoObject> changes, String commitMessage)
+    public ObjectId applyChangesAndPush(List<RepoObject> changes, String commitMessage, List<String> tags)
             throws IOException, GitAPIException {
         ObjectId commitId = commitService.applyChanges(changes, commitMessage, defaultBranchRef);
+        for (String tag : tags) {
+            gitRepository.addTagToCommit(tag, defaultBranchRef);
+        }
         remoteService.push(defaultBranchRef);
         return commitId;
+    }
+
+    public void addTags(List<String> tags, String commitish) throws IOException, GitAPIException {
+        for (String tag : tags) {
+            gitRepository.addTagToCommit(tag, commitish);
+        }
+        remoteService.push(commitish);
     }
 
     public boolean isEmptyRepo() throws IOException {
