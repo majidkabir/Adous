@@ -1,34 +1,31 @@
-package app.majid.adous;
+package app.majid.adous.it;
 
 import app.majid.adous.git.service.GitService;
 import app.majid.adous.synchronizer.service.DatabaseRepositorySynchronizerService;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
+import javax.sql.DataSource;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
-class AdousApplicationTests {
+class InitRepoTestsIT {
 
     @Autowired
     DatabaseRepositorySynchronizerService synchronizerService;
 
     @Autowired
     GitService gitService;
-
-	@Test
-	void contextLoads() {
-	}
 
     @Test
     void testSynchronizerServiceNotNull() throws GitAPIException, IOException {

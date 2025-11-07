@@ -1,4 +1,4 @@
-package app.majid.adous;
+package app.majid.adous.it;
 
 import app.majid.adous.db.config.DbConfig;
 import app.majid.adous.db.config.DbProperties;
@@ -17,7 +17,7 @@ class TestcontainersConfiguration {
     MSSQLServerContainer<?> mssqlServerContainer() {
         var container = new MSSQLServerContainer<>("mcr.microsoft.com/mssql/server:2022-latest")
                 .acceptLicense()
-                .withInitScript("initdb.sql");
+                .withInitScript("init-databases.sql");
         container.start();
         return container;
     }

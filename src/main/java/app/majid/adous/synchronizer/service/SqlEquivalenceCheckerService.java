@@ -1,11 +1,15 @@
 package app.majid.adous.synchronizer.service;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.Objects;
 
 @Service
 public class SqlEquivalenceCheckerService {
+
+    @Value("${spring.application.database.default-schema}")
+    private String defaultSchema;
 
     public boolean equals(String sqlA, String sqlB) {
         return Objects.equals(normalizeSql(sqlA), normalizeSql(sqlB));
@@ -66,7 +70,8 @@ public class SqlEquivalenceCheckerService {
             }
         }
         String createStatement = selectCreateStatement(normalizedSql.toString());
-        return replaceCreateOrAlterWithCreate(createStatement);
+        String withoutAlter = replaceCreateOrAlterWithCreate(createStatement);
+        return removeSchemaPrefixes(withoutAlter);
     }
 
     private String selectCreateStatement(String sql) {
@@ -97,5 +102,13 @@ public class SqlEquivalenceCheckerService {
         }
 
         return sql;
+    }
+
+    private String removeSchemaPrefixes(String sql) {
+        // Remove schema prefixes from object names (e.g., dbo.)
+        return sql.replaceAll(
+                "(create|alter)\\s+(procedure|function|view|trigger)\\s+(?:\\[?%s+\\]?\\.)?".formatted(defaultSchema),
+                "$1 $2 "
+        );
     }
 }

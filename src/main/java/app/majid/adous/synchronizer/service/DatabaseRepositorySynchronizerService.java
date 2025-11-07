@@ -78,7 +78,6 @@ public class DatabaseRepositorySynchronizerService {
                 .filter(o -> !ignoreService.shouldIgnore(o.path()))
                 .toList();
 
-        gitService.createInitialCommit();
         gitService.applyChangesAndPush(repoChanges, "Repo initialized with DB: " + dbName);
 
         return repoChanges.toString();
