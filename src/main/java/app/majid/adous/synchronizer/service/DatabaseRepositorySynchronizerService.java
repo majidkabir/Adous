@@ -1,5 +1,7 @@
 package app.majid.adous.synchronizer.service;
 
+import app.majid.adous.db.aspect.UseDatabase;
+import app.majid.adous.db.config.DatabaseContextHolder;
 import app.majid.adous.db.service.DatabaseService;
 import app.majid.adous.git.service.GitService;
 import app.majid.adous.synchronizer.exception.DbNotOnboardedException;
@@ -37,12 +39,13 @@ public class DatabaseRepositorySynchronizerService {
         this.ignoreService = ignoreService;
     }
 
+    @UseDatabase("dbName")
     public String initRepo(String dbName) throws IOException, GitAPIException {
         if (!gitService.isEmptyRepo()) {
             throw new IllegalStateException("Cannot initialize non-empty repository");
         }
 
-        List<DbObject> dbObjects = databaseService.getDbObjects(dbName);
+        List<DbObject> dbObjects = databaseService.getDbObjects();
 
         if (dbObjects.isEmpty()) {
             throw new IllegalStateException("No database objects found in database: " + dbName);
@@ -59,10 +62,9 @@ public class DatabaseRepositorySynchronizerService {
         return repoChanges.toString();
     }
 
+    @UseDatabase("dbName")
     public String syncDbToRepo(String dbName, boolean dryRun) throws IOException, GitAPIException {
-        List<RepoObject> outOfSyncObjects = detectOutOfSyncDbObjects(dbName).stream()
-                .filter(o -> !ignoreService.shouldIgnore(o.path()))
-                .toList();
+        List<RepoObject> outOfSyncObjects = detectOutOfSyncDbObjects(dbName);
 
         if (!dryRun) {
             var tags = isDbOnboardedInRepo(dbName) ?
@@ -77,6 +79,7 @@ public class DatabaseRepositorySynchronizerService {
         return outOfSyncObjects.toString();
     }
 
+    @UseDatabase("dbName")
     @Transactional
     public String syncRepoToDb(String commitish, String dbName, boolean dryRun, boolean force)
             throws IOException, GitAPIException {
@@ -97,10 +100,8 @@ public class DatabaseRepositorySynchronizerService {
 
         List<DbObject> dbChanges = gitService.getRepoChangesToApplyToDb(commitish, dbName);
 
-        if (dbChanges.isEmpty()) {
-            return "No changes to apply for DB: " + dbName + " at commitish: " + commitish;
-        } else if (!dryRun) {
-            databaseService.applyChangesToDatabase(dbName, dbChanges);
+        if (!dryRun) {
+            databaseService.applyChangesToDatabase(dbChanges);
             var tags = List.of("sync-from-db-" + dbName, dbName);
             gitService.addTags(tags, commitish);
         }
@@ -112,12 +113,9 @@ public class DatabaseRepositorySynchronizerService {
     }
 
     private List<RepoObject> detectOutOfSyncDbObjects(String dbName) throws IOException {
-        String tag = "sync-from-db-" + dbName;
-        if (isDbOnboardedInRepo(dbName)) {
-            return computeDbDiffForCommit(gitService.getTag(tag), dbName);
-        } else {
-            return computeDbDiffForCommit(Constants.HEAD, dbName);
-        }
+        return isDbOnboardedInRepo(dbName)
+            ? computeDbDiffForCommit(gitService.getTag("sync-from-db-" + dbName), dbName)
+            : computeDbDiffForCommit(Constants.HEAD, dbName);
     }
 
     private List<RepoObject> computeDbDiffForCommit(String commitish, String dbName) throws IOException {
@@ -139,16 +137,18 @@ public class DatabaseRepositorySynchronizerService {
                     }
                 });
 
-        return diffs;
+        return diffs.stream()
+                .filter(o -> !ignoreService.shouldIgnore(o.path()))
+                .toList();
     }
 
     private Map<String, FullObject> getAllObjectsForDb(String commitish, String dbName) throws IOException {
         var all = new ConcurrentHashMap<String, FullObject>();
 
         var baseRootPath = gitService.getBasePath();
-        var diffRootPath = gitService.getDiffPath() + dbName;
+        var diffRootPath = gitService.getDiffPath() + "/" + dbName;
 
-        var dbObjects = databaseService.getDbObjects(dbName);
+        var dbObjects = databaseService.getDbObjects();
         var baseObjects = gitService.getAllFilesAtRef(commitish, baseRootPath);
         var diffObjectsForDb = gitService.getAllFilesAtRef(commitish, diffRootPath);
 
@@ -183,8 +183,8 @@ public class DatabaseRepositorySynchronizerService {
     private FullObject initFullObjectFromKey(String key, String dbName) {
         return new FullObject(
                 key,
-                gitService.getBasePath() + key + ".sql",
-                gitService.getDiffPath() + "/" + dbName + "/" + key + ".sql"
+                gitService.getBasePath(),
+                gitService.getDiffPath() + "/" + dbName
         );
     }
 

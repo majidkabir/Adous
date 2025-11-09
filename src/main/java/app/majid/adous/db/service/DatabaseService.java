@@ -3,6 +3,7 @@ package app.majid.adous.db.service;
 import app.majid.adous.db.config.DatabaseContextHolder;
 import app.majid.adous.synchronizer.model.DbObject;
 import app.majid.adous.synchronizer.model.DbObjectType;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -18,14 +19,16 @@ import java.util.Objects;
 @Service
 public class DatabaseService {
 
+    @Value("${spring.application.database.default-schema:dbo}")
+    private String defaultSchema;
+
     private final JdbcTemplate jdbcTemplate;
 
     public DatabaseService(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    public List<DbObject> getDbObjects(String dbName) {
-        DatabaseContextHolder.setCurrentDb(dbName);
+    public List<DbObject> getDbObjects() {
         return jdbcTemplate.query("""
                 SELECT
                     s.name AS schema_name,
@@ -61,8 +64,10 @@ public class DatabaseService {
     }
 
     @Transactional
-    public void applyChangesToDatabase(String dbName, List<DbObject> dbChanges) {
-        DatabaseContextHolder.setCurrentDb(dbName);
+    public void applyChangesToDatabase(List<DbObject> dbChanges) {
+        if (dbChanges.isEmpty()) {
+            return;
+        }
 
         ResourceDatabasePopulator populator = new ResourceDatabasePopulator();
         populator.setSeparator("GO");
@@ -70,6 +75,7 @@ public class DatabaseService {
         dbChanges.stream()
                 .map(DbObject::schema)
                 .distinct()
+                .filter(schema -> !schema.equalsIgnoreCase(defaultSchema))
                 .forEach(schema -> {
                     jdbcTemplate.execute(
                             "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '%s') " +

@@ -1,9 +1,12 @@
 package app.majid.adous.it;
 
-import app.majid.adous.git.service.GitCommitService;
+import app.majid.adous.db.config.DatabaseContextHolder;
 import app.majid.adous.git.service.GitService;
 import app.majid.adous.synchronizer.service.DatabaseRepositorySynchronizerService;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.lib.Constants;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.Repository;
 import org.graalvm.collections.Pair;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -27,7 +30,7 @@ class SynchronizationTestsIT {
     GitService gitService;
 
     @Autowired
-    GitCommitService commitService;
+    Repository repo;
 
     @Test
     void testSynchronizerServiceNotNull() throws GitAPIException, IOException {
@@ -36,43 +39,18 @@ class SynchronizationTestsIT {
 
         synchronizerService.syncDbToRepo("db2", false);
         assertDb2SyncedRepoState();
+
+        assertNotEquals(getTagObjectId("db1"), getTagObjectId("db2"));
+
+        synchronizerService.syncRepoToDb(Constants.HEAD, "db1", false, false);
+
+        assertEquals(getTagObjectId("db1"), getTagObjectId("db2"));
     }
 
-    private void assertDb2SyncedRepoState() {
-        assertAll("Checking existence of all non-ignored database objects in git repo",
-                Stream.of(
-                        "diff/db2/PROCEDURE/dbo/proc1.sql",
-                        "diff/db2/PROCEDURE/dbo/prefix4_proc1.sql",
-                        "diff/db2/TRIGGER/dbo/trigger1.sql",
-                        "diff/db2/VIEW/dbo/view1.sql",
-                        "diff/db2/FUNCTION/dbo/func1.sql"
-                ).map(this::assertFileExists).toArray(Executable[]::new)
-        );
+    private void assertInitializedRepoState() throws IOException {
+        assertEquals(getHeadObjectId(), getTagObjectId("db1"));
+        assertEquals(getHeadObjectId(), getTagObjectId("sync-from-db-db1"));
 
-        assertAll("Checking non-existence of all ignored database objects in git repo",
-                Stream.of(
-                        "diff/db2/PROCEDURE/dbo/prefix1_proc2.sql",
-                        "diff/db2/VIEW/dbo/prefix3_view2.sql",
-                        "diff/db2/TRIGGER/dbo/prefix2_trigger1.sql",
-                        "diff/db2/FUNCTION/dbo/prefix4_func2.sql"
-                ).map(this::assertFileNotExists).toArray(Executable[]::new)
-        );
-
-        assertAll("Checking definitions of selected database objects in git repo",
-                Stream.of(
-                        Pair.create("diff/db2/PROCEDURE/dbo/proc1.sql", """
-                                SET ANSI_NULLS ON;
-                                GO
-                                SET QUOTED_IDENTIFIER ON;
-                                GO
-                                CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 11 executed' AS Message; END
-                                GO"""),
-                        Pair.create("diff/db2/PROCEDURE/dbo/prefix3_proc1", "")
-                ).map(this::assertFileContent).toArray(Executable[]::new)
-        );
-    }
-
-    private void assertInitializedRepoState() {
         assertAll("Checking existence of all non-ignored database objects in git repo",
                 Stream.of(
                         "base/PROCEDURE/dbo/proc1.sql",
@@ -141,6 +119,72 @@ class SynchronizationTestsIT {
         );
     }
 
+    private void assertDb2SyncedRepoState() throws IOException {
+        assertEquals(getHeadObjectId(), getTagObjectId("db2"));
+        assertEquals(getHeadObjectId(), getTagObjectId("sync-from-db-db2"));
+
+        assertAll("Checking existence of all non-ignored database objects in git repo",
+                Stream.of(
+                        "diff/db2/PROCEDURE/dbo/proc1.sql",
+                        "diff/db2/PROCEDURE/dbo/prefix4_proc1.sql",
+                        "diff/db2/TRIGGER/dbo/trigger1.sql",
+                        "diff/db2/VIEW/dbo/view1.sql",
+                        "diff/db2/FUNCTION/dbo/func1.sql"
+                ).map(this::assertFileExists).toArray(Executable[]::new)
+        );
+
+        assertAll("Checking non-existence of all ignored database objects in git repo",
+                Stream.of(
+                        "diff/db2/PROCEDURE/dbo/prefix1_proc2.sql",
+                        "diff/db2/VIEW/dbo/prefix3_view2.sql",
+                        "diff/db2/TRIGGER/dbo/prefix2_trigger1.sql",
+                        "diff/db2/FUNCTION/dbo/prefix4_func2.sql"
+                ).map(this::assertFileNotExists).toArray(Executable[]::new)
+        );
+
+        assertAll("Checking definitions of selected database objects in git repo",
+                Stream.of(
+                        Pair.create("diff/db2/PROCEDURE/dbo/proc1.sql", """
+                                SET ANSI_NULLS ON;
+                                GO
+                                SET QUOTED_IDENTIFIER ON;
+                                GO
+                                CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 11 executed' AS Message; END
+                                GO"""),
+                        Pair.create("diff/db2/PROCEDURE/dbo/prefix4_proc1.sql", ""),
+                        Pair.create("diff/db2/TRIGGER/dbo/trigger1.sql", """
+                                SET ANSI_NULLS ON;
+                                GO
+                                SET QUOTED_IDENTIFIER ON;
+                                GO
+                                CREATE TRIGGER trigger1 ON table1 AFTER INSERT AS BEGIN INSERT INTO table1 (name) VALUES ('test name 11'); END
+                                GO"""),
+                        Pair.create("diff/db2/VIEW/dbo/view1.sql", """
+                                SET ANSI_NULLS ON;
+                                GO
+                                SET QUOTED_IDENTIFIER ON;
+                                GO
+                                CREATE VIEW view1 AS SELECT id, 'p1' AS prefix FROM table1
+                                GO"""),
+                        Pair.create("diff/db2/FUNCTION/dbo/func1.sql", """
+                                SET ANSI_NULLS ON;
+                                GO
+                                SET QUOTED_IDENTIFIER ON;
+                                GO
+                                CREATE FUNCTION func1() RETURNS INT BEGIN RETURN 11 END
+                                GO""")
+                ).map(this::assertFileContent).toArray(Executable[]::new)
+        );
+    }
+
+    private ObjectId getTagObjectId(String tag) throws IOException {
+        return repo.findRef(Constants.R_TAGS + tag).getObjectId();
+    }
+
+    private ObjectId getHeadObjectId() throws IOException {
+        return repo.findRef(Constants.HEAD).getObjectId();
+    }
+
     private Executable assertFileExists(String path) {
         return () -> assertTrue(
                 gitService.getFileContentAtRef("HEAD", path).isPresent(),
@@ -156,9 +200,11 @@ class SynchronizationTestsIT {
     }
 
     private Executable assertFileContent(Pair<String, String> fileContent) {
-        String expected = fileContent.getRight();
-        String actual = gitService.getFileContentAtRef("HEAD", fileContent.getLeft()).orElse("");
-        return () -> assertEquals(normalizeLineEndings(expected), normalizeLineEndings(actual),
+        String expected = fileContent.getRight() != null ? normalizeLineEndings(fileContent.getRight()) : null;
+        String actual = gitService.getFileContentAtRef("HEAD", fileContent.getLeft())
+                .map(this::normalizeLineEndings).orElse(null);
+
+        return () -> assertEquals(expected, actual,
                 "Content mismatch for file: %s, actual: %s".formatted(fileContent.getLeft(), actual));
     }
 

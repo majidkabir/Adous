@@ -24,6 +24,7 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
     implementation 'org.eclipse.jgit:org.eclipse.jgit:7.3.0.202506031305-r'
 
     runtimeOnly 'com.microsoft.sqlserver:mssql-jdbc'

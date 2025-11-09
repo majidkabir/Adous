@@ -63,14 +63,14 @@ public class GitService {
         return gitRepository.getAllFilesAtRef(commitish, folder);
     }
 
-    public List<DiffEntry> getDiff(String commitId, String ancestorId) throws IOException {
-        return diffService.getDiff(commitId, ancestorId);
+    public List<DiffEntry> getDiff(String commitId, String ancestorId, List<String> folders) throws IOException {
+        return diffService.getDiff(commitId, ancestorId, folders);
     }
 
     public List<DbObject> getRepoChangesToApplyToDb(String commitish, String dbName) throws IOException {
         List<DbObject> dbObjects = new ArrayList<>();
 
-        List<DiffEntry> diff = getDiff(commitish, getTag(dbName));
+        List<DiffEntry> diff = getDiff(commitish, getTag(dbName), List.of(baseRootPath, diffRootPath + "/" + dbName));
         diff.forEach(e -> {
             if (newOrModifiedInBaseAndNotExistInDiff(e, commitish)) {
                 dbObjects.add(dbObjectMapper.fromPath(e.getNewPath(), getFileContent(e.getNewId().toObjectId()).orElse(null)));
