@@ -17,7 +17,7 @@ import static java.nio.file.Files.createTempDirectory;
 @Configuration
 public class GitConfig {
 
-    @Bean
+    @Bean()
     public CredentialsProvider credentialsProvider(GitProperties gitProperties) {
         return new UsernamePasswordCredentialsProvider("token", gitProperties.token());
     }
