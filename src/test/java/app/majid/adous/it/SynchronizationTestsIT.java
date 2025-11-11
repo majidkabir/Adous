@@ -12,12 +12,12 @@ import app.majid.adous.synchronizer.service.DatabaseRepositorySynchronizerServic
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
-import org.graalvm.collections.Pair;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.util.Pair;
 
 import java.util.List;
 import java.util.stream.Stream;
@@ -107,28 +107,28 @@ class SynchronizationTestsIT {
 
         assertAll("Checking definitions of selected database objects in git repo",
                 Stream.of(
-                        Pair.create("base/PROCEDURE/dbo/proc1.sql", """
+                        Pair.of("base/PROCEDURE/dbo/proc1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 1 executed' AS Message; END
                                 GO"""),
-                        Pair.create("base/TRIGGER/dbo/trigger1.sql", """
+                        Pair.of("base/TRIGGER/dbo/trigger1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE TRIGGER trigger1 ON table1 AFTER INSERT AS BEGIN INSERT INTO table1 (name) VALUES ('test name 1'); END
                                 GO"""),
-                        Pair.create("base/VIEW/dbo/view1.sql", """
+                        Pair.of("base/VIEW/dbo/view1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE VIEW view1 AS SELECT id FROM table1
                                 GO"""),
-                        Pair.create("base/FUNCTION/dbo/func1.sql", """
+                        Pair.of("base/FUNCTION/dbo/func1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
@@ -163,29 +163,29 @@ class SynchronizationTestsIT {
 
         assertAll("Checking definitions of selected database objects in git repo",
                 Stream.of(
-                        Pair.create("diff/db2/PROCEDURE/dbo/proc1.sql", """
+                        Pair.of("diff/db2/PROCEDURE/dbo/proc1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 11 executed' AS Message; END
                                 GO"""),
-                        Pair.create("diff/db2/PROCEDURE/dbo/prefix4_proc1.sql", ""),
-                        Pair.create("diff/db2/TRIGGER/dbo/trigger1.sql", """
+                        Pair.of("diff/db2/PROCEDURE/dbo/prefix4_proc1.sql", ""),
+                        Pair.of("diff/db2/TRIGGER/dbo/trigger1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE TRIGGER trigger1 ON table1 AFTER INSERT AS BEGIN INSERT INTO table1 (name) VALUES ('test name 11'); END
                                 GO"""),
-                        Pair.create("diff/db2/VIEW/dbo/view1.sql", """
+                        Pair.of("diff/db2/VIEW/dbo/view1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE VIEW view1 AS SELECT id, 'p1' AS prefix FROM table1
                                 GO"""),
-                        Pair.create("diff/db2/FUNCTION/dbo/func1.sql", """
+                        Pair.of("diff/db2/FUNCTION/dbo/func1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
@@ -347,12 +347,12 @@ class SynchronizationTestsIT {
     }
 
     private Executable assertFileContent(Pair<String, String> fileContent) {
-        String expected = fileContent.getRight() != null ? normalizeLineEndings(fileContent.getRight()) : null;
-        String actual = gitService.getFileContentAtRef("HEAD", fileContent.getLeft())
+        String expected = fileContent.getSecond() != null ? normalizeLineEndings(fileContent.getSecond()) : null;
+        String actual = gitService.getFileContentAtRef("HEAD", fileContent.getFirst())
                 .map(this::normalizeLineEndings).orElse(null);
 
         return () -> assertEquals(expected, actual,
-                "Content mismatch for file: %s, actual: %s".formatted(fileContent.getLeft(), actual));
+                "Content mismatch for file: %s, actual: %s".formatted(fileContent.getFirst(), actual));
     }
 
     private String normalizeLineEndings(String input) {
