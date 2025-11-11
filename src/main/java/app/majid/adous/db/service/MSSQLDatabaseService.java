@@ -1,6 +1,6 @@
 package app.majid.adous.db.service;
 
-import app.majid.adous.db.config.DatabaseContextHolder;
+import app.majid.adous.synchronizer.db.DatabaseService;
 import app.majid.adous.synchronizer.model.DbObject;
 import app.majid.adous.synchronizer.model.DbObjectType;
 import org.springframework.beans.factory.annotation.Value;
@@ -17,14 +17,14 @@ import java.util.List;
 import java.util.Objects;
 
 @Service
-public class DatabaseService {
+public class MSSQLDatabaseService implements DatabaseService {
 
     @Value("${spring.application.database.default-schema:dbo}")
     private String defaultSchema;
 
     private final JdbcTemplate jdbcTemplate;
 
-    public DatabaseService(JdbcTemplate jdbcTemplate) {
+    public MSSQLDatabaseService(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
     }
 

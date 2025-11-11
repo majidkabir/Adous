@@ -69,20 +69,21 @@ public class GitService {
 
     public List<DbObject> getRepoChangesToApplyToDb(String commitish, String dbName) throws IOException {
         List<DbObject> dbObjects = new ArrayList<>();
+        String diffPath = diffRootPath + "/" + dbName;
 
-        List<DiffEntry> diff = getDiff(commitish, getTag(dbName), List.of(baseRootPath, diffRootPath + "/" + dbName));
+        List<DiffEntry> diff = getDiff(commitish, getTag(dbName), List.of(baseRootPath, diffPath));
         diff.forEach(e -> {
-            if (newOrModifiedInBaseAndNotExistInDiff(e, commitish)) {
+            if (newOrModifiedInBaseAndNotExistInDiff(e, commitish, diffPath)) {
                 dbObjects.add(dbObjectMapper.fromPath(e.getNewPath(), getFileContent(e.getNewId().toObjectId()).orElse(null)));
             }
-            if (removedFromBaseAndNotExistInDiff(e, commitish)) {
+            if (removedFromBaseAndNotExistInDiff(e, commitish, diffPath)) {
                 dbObjects.add(dbObjectMapper.fromPath(e.getOldPath(), null));
             }
-            if (newOrModifiedInDiff(e)) {
+            if (newOrModifiedInDiff(e, diffPath)) {
                 dbObjects.add(dbObjectMapper.fromPath(e.getNewPath(), getFileContent(e.getNewId().toObjectId()).orElse(null)));
             }
-            if (removedFromDiff(e)) {
-                Optional<String> c = getFileContentAtRef(commitish, e.getOldPath().replace(diffRootPath, baseRootPath));
+            if (removedFromDiff(e, diffPath)) {
+                Optional<String> c = getFileContentAtRef(commitish, e.getOldPath().replace(diffPath, baseRootPath));
                 dbObjects.add(dbObjectMapper.fromPath(e.getOldPath(), c.orElse(null)));
             }
         });
@@ -93,9 +94,7 @@ public class GitService {
     public ObjectId applyChangesAndPush(List<RepoObject> changes, String commitMessage, List<String> tags)
             throws IOException, GitAPIException {
         ObjectId commitId = commitService.applyChanges(changes, commitMessage, defaultBranchRef);
-        for (String tag : tags) {
-            gitRepository.addTagToCommit(tag, defaultBranchRef);
-        }
+        addTags(tags, defaultBranchRef);
         remoteService.push(defaultBranchRef);
         return commitId;
     }
@@ -131,25 +130,25 @@ public class GitService {
         return baseRootPath;
     }
 
-    private boolean removedFromDiff(DiffEntry e) {
-        return RENAME_OR_DELETION.contains(e.getChangeType()) && e.getOldPath().startsWith(diffRootPath);
+    private boolean removedFromDiff(DiffEntry e, String diffPath) {
+        return RENAME_OR_DELETION.contains(e.getChangeType()) && e.getOldPath().startsWith(diffPath);
     }
 
-    private boolean newOrModifiedInDiff(DiffEntry e) {
-        return ADDITION_OR_MODIFICATION.contains(e.getChangeType()) && e.getNewPath().startsWith(diffRootPath);
+    private boolean newOrModifiedInDiff(DiffEntry e, String diffPath) {
+        return ADDITION_OR_MODIFICATION.contains(e.getChangeType()) && e.getNewPath().startsWith(diffPath);
     }
 
-    private boolean removedFromBaseAndNotExistInDiff(DiffEntry e, String commitish) {
+    private boolean removedFromBaseAndNotExistInDiff(DiffEntry e, String commitish, String diffPath) {
         if (RENAME_OR_DELETION.contains(e.getChangeType()) && e.getOldPath().startsWith(baseRootPath)) {
-            Optional<String> c = getFileContentAtRef(commitish, e.getNewPath().replace(baseRootPath, diffRootPath));
+            Optional<String> c = getFileContentAtRef(commitish, e.getNewPath().replace(baseRootPath, diffPath));
             return c.isEmpty();
         }
         return false;
     }
 
-    private boolean newOrModifiedInBaseAndNotExistInDiff(DiffEntry e, String commitish) {
+    private boolean newOrModifiedInBaseAndNotExistInDiff(DiffEntry e, String commitish, String diffPath) {
         if (ADDITION_OR_MODIFICATION.contains(e.getChangeType()) && e.getNewPath().startsWith(baseRootPath)) {
-            Optional<String> c = getFileContentAtRef(commitish, e.getNewPath().replace(baseRootPath, diffRootPath));
+            Optional<String> c = getFileContentAtRef(commitish, e.getNewPath().replace(baseRootPath, diffPath));
             return c.isEmpty();
         }
         return false;

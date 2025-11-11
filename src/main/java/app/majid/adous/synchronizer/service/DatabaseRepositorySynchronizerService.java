@@ -1,9 +1,8 @@
 package app.majid.adous.synchronizer.service;
 
 import app.majid.adous.db.aspect.UseDatabase;
-import app.majid.adous.db.config.DatabaseContextHolder;
-import app.majid.adous.db.service.DatabaseService;
 import app.majid.adous.git.service.GitService;
+import app.majid.adous.synchronizer.db.DatabaseService;
 import app.majid.adous.synchronizer.exception.DbNotOnboardedException;
 import app.majid.adous.synchronizer.exception.DbOutOfSyncException;
 import app.majid.adous.synchronizer.model.DbObject;
@@ -16,8 +15,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
@@ -56,8 +57,8 @@ public class DatabaseRepositorySynchronizerService {
                 .filter(o -> !ignoreService.shouldIgnore(o.path()))
                 .toList();
 
-        var tags = List.of("sync-from-db-" + dbName, dbName);
-        gitService.applyChangesAndPush(repoChanges, "Repo initialized with DB: " + dbName, tags);
+        gitService.applyChangesAndPush(repoChanges, "Repo initialized with DB: " + dbName,
+                List.of(dbName));
 
         return repoChanges.toString();
     }
@@ -66,14 +67,9 @@ public class DatabaseRepositorySynchronizerService {
     public String syncDbToRepo(String dbName, boolean dryRun) throws IOException, GitAPIException {
         List<RepoObject> outOfSyncObjects = detectOutOfSyncDbObjects(dbName);
 
-        if (!dryRun) {
-            var tags = isDbOnboardedInRepo(dbName) ?
-                    List.of("sync-from-db-" + dbName) : List.of("sync-from-db-" + dbName, dbName);
-            if (!outOfSyncObjects.isEmpty()) {
-                gitService.applyChangesAndPush(outOfSyncObjects, "Repo synced with DB: " + dbName, tags);
-            } else {
-                gitService.addTags(tags, Constants.HEAD);
-            }
+        if (!dryRun && !outOfSyncObjects.isEmpty()) {
+            List<String> tags = isDbOnboardedInRepo(dbName) ? Collections.emptyList() : List.of(dbName);
+            gitService.applyChangesAndPush(outOfSyncObjects, "Repo synced with DB: " + dbName, tags);
         }
 
         return outOfSyncObjects.toString();
@@ -102,10 +98,20 @@ public class DatabaseRepositorySynchronizerService {
 
         if (!dryRun) {
             databaseService.applyChangesToDatabase(dbChanges);
-            var tags = List.of("sync-from-db-" + dbName, dbName);
-            gitService.addTags(tags, commitish);
+            gitService.addTags(List.of(dbName), commitish);
         }
         return dbChanges.toString();
+    }
+
+    private boolean notExistsInRepoHead(RepoObject repoObject, String dbName) {
+        var repoDiffDef = gitService.getFileContentAtRef(Constants.HEAD, repoObject.path())
+                .orElse(null);
+        var basePath = repoObject.path().
+                replace(gitService.getDiffPath() + "/" + dbName, gitService.getBasePath());
+        var repoBaseDef = gitService.getFileContentAtRef(Constants.HEAD, basePath)
+                .orElse(null);
+        return !(Objects.equals(repoObject.definition(), repoBaseDef) ||
+                Objects.equals(repoObject.definition(), repoDiffDef));
     }
 
     private boolean isDbOnboardedInRepo(String dbName) throws IOException {
@@ -113,9 +119,13 @@ public class DatabaseRepositorySynchronizerService {
     }
 
     private List<RepoObject> detectOutOfSyncDbObjects(String dbName) throws IOException {
-        return isDbOnboardedInRepo(dbName)
-            ? computeDbDiffForCommit(gitService.getTag("sync-from-db-" + dbName), dbName)
+        var outOfSyncObjects = isDbOnboardedInRepo(dbName)
+            ? computeDbDiffForCommit(gitService.getTag(dbName), dbName)
             : computeDbDiffForCommit(Constants.HEAD, dbName);
+
+        return outOfSyncObjects.stream()
+                .filter(o -> notExistsInRepoHead(o, dbName))
+                .toList();
     }
 
     private List<RepoObject> computeDbDiffForCommit(String commitish, String dbName) throws IOException {
@@ -131,7 +141,9 @@ public class DatabaseRepositorySynchronizerService {
                             diffs.add(new RepoObject(o.getDiffPath(), null));
                         }
                     } else if (o.getDbDefinition() == null) {
-                        diffs.add(new RepoObject(o.getDiffPath(), ""));
+                        if (!"".equals(o.getDiffDefinition())) {
+                            diffs.add(new RepoObject(o.getDiffPath(), ""));
+                        }
                     } else if (!sqlEquivalenceCheckerService.equals(o.getDbDefinition(), o.getDiffDefinition())) {
                         diffs.add(new RepoObject(o.getDiffPath(), o.getDbDefinition()));
                     }

@@ -1,9 +1,14 @@
 package app.majid.adous.it;
 
 import app.majid.adous.db.config.DatabaseContextHolder;
+import app.majid.adous.git.service.GitCommitService;
 import app.majid.adous.git.service.GitService;
+import app.majid.adous.synchronizer.db.DatabaseService;
+import app.majid.adous.synchronizer.exception.DbOutOfSyncException;
+import app.majid.adous.synchronizer.model.DbObject;
+import app.majid.adous.synchronizer.model.DbObjectType;
+import app.majid.adous.synchronizer.model.RepoObject;
 import app.majid.adous.synchronizer.service.DatabaseRepositorySynchronizerService;
-import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
@@ -14,7 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 
-import java.io.IOException;
+import java.util.List;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -32,24 +37,39 @@ class SynchronizationTestsIT {
     @Autowired
     Repository repo;
 
+    @Autowired
+    GitCommitService gitCommitService;
+
+    @Autowired
+    DatabaseService databaseService;
+
     @Test
-    void testSynchronizerServiceNotNull() throws GitAPIException, IOException {
+    void testSynchronizerServiceNotNull() throws Exception {
         synchronizerService.initRepo("db1");
         assertInitializedRepoState();
 
         synchronizerService.syncDbToRepo("db2", false);
         assertDb2SyncedRepoState();
-
         assertNotEquals(getTagObjectId("db1"), getTagObjectId("db2"));
 
         synchronizerService.syncRepoToDb(Constants.HEAD, "db1", false, false);
-
         assertEquals(getTagObjectId("db1"), getTagObjectId("db2"));
+
+        // Update object in base folder of repo and sync to dbs should update all dbs when there is no diff for that object
+        assertUpdateBaseObjectWithoutDiffAndSyncToDbs();
+
+        // Update proc1 in repo and sync to db1 and db2, then verify proc1 is not updated in db2 due to diff override
+        assertUpdateBaseObjectWithDiffAndSyncToDbs();
+
+        // Remove proc1 from diff folder of db2 and sync to db2, then verify proc1 updated to base definition
+        assertRemoveDiffObjectAndSyncToDb2();
+
+        // Sync changed repo to a db that is not sync with repo, has some manual changes
+        assertSyncRepoChangeToUnsyncedDb();
     }
 
-    private void assertInitializedRepoState() throws IOException {
+    private void assertInitializedRepoState() throws Exception {
         assertEquals(getHeadObjectId(), getTagObjectId("db1"));
-        assertEquals(getHeadObjectId(), getTagObjectId("sync-from-db-db1"));
 
         assertAll("Checking existence of all non-ignored database objects in git repo",
                 Stream.of(
@@ -119,9 +139,8 @@ class SynchronizationTestsIT {
         );
     }
 
-    private void assertDb2SyncedRepoState() throws IOException {
+    private void assertDb2SyncedRepoState() throws Exception {
         assertEquals(getHeadObjectId(), getTagObjectId("db2"));
-        assertEquals(getHeadObjectId(), getTagObjectId("sync-from-db-db2"));
 
         assertAll("Checking existence of all non-ignored database objects in git repo",
                 Stream.of(
@@ -177,11 +196,139 @@ class SynchronizationTestsIT {
         );
     }
 
-    private ObjectId getTagObjectId(String tag) throws IOException {
+    private void assertUpdateBaseObjectWithoutDiffAndSyncToDbs() throws Exception {
+        String proc2Def= """
+                        SET ANSI_NULLS ON;
+                        GO
+                        SET QUOTED_IDENTIFIER ON;
+                        GO
+                        CREATE PROCEDURE proc2 AS BEGIN SELECT 'Procedure 2 UPDATED executed' AS Message; END\s
+                        GO""";
+        updateRepo(List.of(new RepoObject("base/PROCEDURE/dbo/proc2.sql", proc2Def)));
+        synchronizerService.syncRepoToDb(Constants.HEAD, "db1", false, false);
+        synchronizerService.syncRepoToDb(Constants.HEAD, "db2", false, false);
+        var expectedProc2DbObject = new DbObject("dbo", "proc2", DbObjectType.PROCEDURE, proc2Def);
+        assertObjectExistInDb("db1", expectedProc2DbObject);
+        assertObjectExistInDb("db2", expectedProc2DbObject);
+    }
+
+    private void assertUpdateBaseObjectWithDiffAndSyncToDbs() throws Exception {
+        String proc1Def= """
+                        SET ANSI_NULLS ON;
+                        GO
+                        SET QUOTED_IDENTIFIER ON;
+                        GO
+                        CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 1 UPDATED executed' AS Message; END\s
+                        GO""";
+        updateRepo(List.of(new RepoObject("base/PROCEDURE/dbo/proc1.sql", proc1Def)));
+        synchronizerService.syncRepoToDb(Constants.HEAD, "db1", false, false);
+        synchronizerService.syncRepoToDb(Constants.HEAD, "db2", false, false);
+        var expectedProc1DbObjectDb1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1Def);
+        var expectedProc1DbObjectDb2 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, """
+                                SET ANSI_NULLS ON;
+                                GO
+                                SET QUOTED_IDENTIFIER ON;
+                                GO
+                                CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 11 executed' AS Message; END
+                                GO""");
+        assertObjectExistInDb("db1", expectedProc1DbObjectDb1);
+        assertObjectExistInDb("db2", expectedProc1DbObjectDb2);
+    }
+
+    private void assertRemoveDiffObjectAndSyncToDb2() throws Exception {
+        String proc1OldDef = databaseService.getDbObjects().stream()
+                .filter(o -> o.name().equals("proc1"))
+                .findFirst().get().definition();
+        String proc1NewDef = """
+                        SET ANSI_NULLS ON;
+                        GO
+                        SET QUOTED_IDENTIFIER ON;
+                        GO
+                        CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 1 UPDATED executed' AS Message; END\s
+                        GO""";
+        updateRepo(List.of(new RepoObject("diff/db2/PROCEDURE/dbo/proc1.sql", null)));
+        String expectedResponse = """
+                [DbObject[schema=dbo, name=proc1, type=PROCEDURE, definition=%s]]"""
+                .formatted(proc1NewDef);
+
+        // Dry run true
+        String dryRunResponse = synchronizerService.syncRepoToDb(Constants.HEAD, "db2", true, false);
+
+        assertEquals(expectedResponse, dryRunResponse);
+        var expectedOldProc1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1OldDef);
+        assertObjectExistInDb("db2", expectedOldProc1);
+
+        // Dry run false
+        String response = synchronizerService.syncRepoToDb(Constants.HEAD, "db2", true, false);
+
+        assertEquals(expectedResponse, response);
+        var expectedNewProc1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1OldDef);
+        assertObjectExistInDb("db2", expectedNewProc1);
+    }
+
+    private void assertSyncRepoChangeToUnsyncedDb() throws Exception {
+        String proc1Def = """
+                        SET ANSI_NULLS ON;
+                        GO
+                        SET QUOTED_IDENTIFIER ON;
+                        GO
+                        CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 1 Update for unsyncedDb' AS Message; END
+                        GO""";
+        updateRepo(List.of(new RepoObject("base/PROCEDURE/dbo/proc1.sql", proc1Def)));
+        String proc2Def = """
+                        SET ANSI_NULLS ON;
+                        GO
+                        SET QUOTED_IDENTIFIER ON;
+                        GO
+                        CREATE PROCEDURE proc2 AS BEGIN SELECT 'Procedure 2 Update for unsyncedDb' AS Message; END\s
+                        GO""";
+        var dbObject = new DbObject("dbo", "proc2", DbObjectType.PROCEDURE, proc2Def);
+        DatabaseContextHolder.setCurrentDb("db2");
+        databaseService.applyChangesToDatabase(List.of(dbObject));
+
+        assertThrows(DbOutOfSyncException.class, () ->
+                synchronizerService.syncRepoToDb(Constants.HEAD, "db2", false, false));
+
+        // Dryrun set to true
+        var actualDryRunResponse = synchronizerService.syncDbToRepo("db2", true);
+
+        var expectedResponse = "[RepoObject[path=diff/db2/PROCEDURE/dbo/proc2.sql, definition=%s]]"
+                .formatted(proc2Def);
+        assertEquals(normalizeLineEndings(expectedResponse), normalizeLineEndings(actualDryRunResponse));
+        assertTrue(gitService.getFileContentAtRef(Constants.HEAD, "diff/db2/PROCEDURE/dbo/proc2.sql").isEmpty());
+
+        // Dryrun set to false
+        var actualResponse = synchronizerService.syncDbToRepo("db2", false);
+        assertEquals(normalizeLineEndings(expectedResponse), normalizeLineEndings(actualResponse));
+        var proc2InDb2Diff = gitService.getFileContentAtRef(Constants.HEAD, "diff/db2/PROCEDURE/dbo/proc2.sql").get();
+        assertEquals(normalizeLineEndings(proc2Def), normalizeLineEndings(proc2InDb2Diff));
+
+        // Already synced, so no changes
+        var noChangeResponse = synchronizerService.syncDbToRepo("db2", false);
+        assertEquals("[]", noChangeResponse);
+    }
+
+    private void updateRepo(List<RepoObject> changes) throws Exception {
+        String headRef = repo.exactRef(Constants.HEAD).getTarget().getName();
+        gitCommitService.applyChanges(changes, "Updated proc2 definition in repo", headRef);
+    }
+
+    private void assertObjectExistInDb(String dbName, DbObject expectedObject) {
+        DatabaseContextHolder.setCurrentDb(dbName);
+        var dbObjects = databaseService.getDbObjects();
+        assertTrue(dbObjects.stream().anyMatch (o ->
+                        o.name().equals(expectedObject.name()) &&
+                                o.schema().equals(expectedObject.schema()) &&
+                                o.type() == expectedObject.type() &&
+                                normalizeLineEndings(o.definition()).equals(normalizeLineEndings(expectedObject.definition()))),
+                "Expected object not found in database %s: %s".formatted(dbName, expectedObject));
+    }
+
+    private ObjectId getTagObjectId(String tag) throws Exception {
         return repo.findRef(Constants.R_TAGS + tag).getObjectId();
     }
 
-    private ObjectId getHeadObjectId() throws IOException {
+    private ObjectId getHeadObjectId() throws Exception {
         return repo.findRef(Constants.HEAD).getObjectId();
     }
 
