@@ -1,6 +1,7 @@
 package app.majid.adous.synchronizer.service;
 
 import app.majid.adous.db.aspect.UseDatabase;
+import app.majid.adous.db.config.DatabaseContextHolder;
 import app.majid.adous.git.service.GitService;
 import app.majid.adous.synchronizer.db.DatabaseService;
 import app.majid.adous.synchronizer.exception.DbNotOnboardedException;
@@ -8,10 +9,11 @@ import app.majid.adous.synchronizer.exception.DbOutOfSyncException;
 import app.majid.adous.synchronizer.model.DbObject;
 import app.majid.adous.synchronizer.model.FullObject;
 import app.majid.adous.synchronizer.model.RepoObject;
+import app.majid.adous.synchronizer.model.SyncResult;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.lib.Constants;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -19,7 +21,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
 
 @Service
 public class DatabaseRepositorySynchronizerService {
@@ -28,16 +32,19 @@ public class DatabaseRepositorySynchronizerService {
     private final DatabaseService databaseService;
     private final SqlEquivalenceCheckerService sqlEquivalenceCheckerService;
     private final SynchronizerIgnoreService ignoreService;
+    private final TransactionTemplate transactionTemplate;
 
     public DatabaseRepositorySynchronizerService(
             GitService gitService,
             DatabaseService databaseService,
             SqlEquivalenceCheckerService sqlEquivalenceCheckerService,
-            SynchronizerIgnoreService ignoreService) {
+            SynchronizerIgnoreService ignoreService,
+            TransactionTemplate transactionTemplate) {
         this.gitService = gitService;
         this.databaseService = databaseService;
         this.sqlEquivalenceCheckerService = sqlEquivalenceCheckerService;
         this.ignoreService = ignoreService;
+        this.transactionTemplate = transactionTemplate;
     }
 
     @UseDatabase("dbName")
@@ -75,32 +82,74 @@ public class DatabaseRepositorySynchronizerService {
         return outOfSyncObjects.toString();
     }
 
-    @UseDatabase("dbName")
-    @Transactional
-    public String syncRepoToDb(String commitish, String dbName, boolean dryRun, boolean force)
-            throws IOException, GitAPIException {
-        if (!isDbOnboardedInRepo(dbName)) {
-            throw new DbNotOnboardedException(dbName);
-        }
+    public List<SyncResult> syncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force)
+            throws IOException {
+        if (dbs.isEmpty()) return Collections.emptyList();
 
         if (!gitService.isHeadCommit(commitish)) {
             dryRun = true;
         }
 
-        if (!force) {
-            var outOfSyncObjects = detectOutOfSyncDbObjects(dbName);
-            if (!outOfSyncObjects.isEmpty()) {
-                throw new DbOutOfSyncException(dbName, outOfSyncObjects);
+        boolean finalDryRun = dryRun;
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<CompletableFuture<SyncResult>> futures = dbs.stream()
+                    .map(dbName -> CompletableFuture.supplyAsync(() -> {
+                        try {
+                            var result = syncRepoToDb(commitish, dbName, finalDryRun, force);
+                            var status = finalDryRun ? SyncResult.Status.SUCCESS_DRY_RUN : SyncResult.Status.SYNCED;
+                            return new SyncResult(dbName, status, result);
+                        } catch (DbNotOnboardedException e) {
+                            return new SyncResult(dbName, SyncResult.Status.SKIPPED_NOT_ONBOARDED, "");
+                        } catch (DbOutOfSyncException e) {
+                            return new SyncResult(dbName, SyncResult.Status.SKIPPED_OUT_OF_SYNC, "");
+                        } catch (IOException | GitAPIException e) {
+                            return new SyncResult(dbName, SyncResult.Status.FAILED, e.getMessage());
+                        }
+                    }, executor))
+                    .toList();
+
+            return futures.stream()
+                    .map(CompletableFuture::join)
+                    .toList();
+        }
+    }
+
+    private String syncRepoToDb(String commitish, String dbName, boolean dryRun, boolean force)
+            throws IOException, GitAPIException, DbNotOnboardedException, DbOutOfSyncException {
+
+        try {
+            DatabaseContextHolder.setCurrentDb(dbName);
+
+            if (!isDbOnboardedInRepo(dbName)) {
+                throw new DbNotOnboardedException(dbName);
             }
-        }
 
-        List<DbObject> dbChanges = gitService.getRepoChangesToApplyToDb(commitish, dbName);
+            if (!force) {
+                var outOfSyncObjects = detectOutOfSyncDbObjects(dbName);
+                if (!outOfSyncObjects.isEmpty()) {
+                    throw new DbOutOfSyncException(dbName, outOfSyncObjects);
+                }
+            }
 
-        if (!dryRun) {
-            databaseService.applyChangesToDatabase(dbChanges);
-            gitService.addTags(List.of(dbName), commitish);
+            List<DbObject> dbChanges = gitService.getRepoChangesToApplyToDb(commitish, dbName);
+
+            if (!dryRun) {
+                transactionTemplate.execute(status -> {
+                    try {
+                        databaseService.applyChangesToDatabase(dbChanges);
+                        gitService.addTags(List.of(dbName), commitish);
+                        return null;
+                    } catch (GitAPIException | IOException e) {
+                        status.setRollbackOnly();
+                        throw new RuntimeException(e);
+                    }
+                });
+            }
+            return dbChanges.toString();
+        } finally {
+            DatabaseContextHolder.clear();
         }
-        return dbChanges.toString();
     }
 
     private boolean notExistsInRepoHead(RepoObject repoObject, String dbName) {
