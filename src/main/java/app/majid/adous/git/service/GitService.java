@@ -2,7 +2,6 @@ package app.majid.adous.git.service;
 
 import app.majid.adous.git.config.GitProperties;
 import app.majid.adous.git.mapper.DbObjectMapper;
-import app.majid.adous.git.repository.GitRepository;
 import app.majid.adous.synchronizer.model.DbObject;
 import app.majid.adous.synchronizer.model.RepoObject;
 import org.eclipse.jgit.api.errors.GitAPIException;

@@ -1,4 +1,4 @@
-package app.majid.adous.git.repository;
+package app.majid.adous.git.service;
 
 import org.eclipse.jgit.lib.*;
 import org.eclipse.jgit.revwalk.RevCommit;

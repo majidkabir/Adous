@@ -4,10 +4,10 @@ import app.majid.adous.db.config.DatabaseContextHolder;
 import app.majid.adous.git.service.GitCommitService;
 import app.majid.adous.git.service.GitService;
 import app.majid.adous.synchronizer.db.DatabaseService;
-import app.majid.adous.synchronizer.exception.DbOutOfSyncException;
 import app.majid.adous.synchronizer.model.DbObject;
 import app.majid.adous.synchronizer.model.DbObjectType;
 import app.majid.adous.synchronizer.model.RepoObject;
+import app.majid.adous.synchronizer.model.SyncResult;
 import app.majid.adous.synchronizer.service.DatabaseRepositorySynchronizerService;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
@@ -52,7 +52,7 @@ class SynchronizationTestsIT {
         assertDb2SyncedRepoState();
         assertNotEquals(getTagObjectId("db1"), getTagObjectId("db2"));
 
-        synchronizerService.syncRepoToDb(Constants.HEAD, "db1", false, false);
+        synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db1"), false, false);
         assertEquals(getTagObjectId("db1"), getTagObjectId("db2"));
 
         // Update object in base folder of repo and sync to dbs should update all dbs when there is no diff for that object
@@ -205,8 +205,7 @@ class SynchronizationTestsIT {
                         CREATE PROCEDURE proc2 AS BEGIN SELECT 'Procedure 2 UPDATED executed' AS Message; END\s
                         GO""";
         updateRepo(List.of(new RepoObject("base/PROCEDURE/dbo/proc2.sql", proc2Def)));
-        synchronizerService.syncRepoToDb(Constants.HEAD, "db1", false, false);
-        synchronizerService.syncRepoToDb(Constants.HEAD, "db2", false, false);
+        synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db1", "db2"), false, false);
         var expectedProc2DbObject = new DbObject("dbo", "proc2", DbObjectType.PROCEDURE, proc2Def);
         assertObjectExistInDb("db1", expectedProc2DbObject);
         assertObjectExistInDb("db2", expectedProc2DbObject);
@@ -221,8 +220,7 @@ class SynchronizationTestsIT {
                         CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 1 UPDATED executed' AS Message; END\s
                         GO""";
         updateRepo(List.of(new RepoObject("base/PROCEDURE/dbo/proc1.sql", proc1Def)));
-        synchronizerService.syncRepoToDb(Constants.HEAD, "db1", false, false);
-        synchronizerService.syncRepoToDb(Constants.HEAD, "db2", false, false);
+        synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db1", "db2"), false, false);
         var expectedProc1DbObjectDb1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1Def);
         var expectedProc1DbObjectDb2 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, """
                                 SET ANSI_NULLS ON;
@@ -236,6 +234,7 @@ class SynchronizationTestsIT {
     }
 
     private void assertRemoveDiffObjectAndSyncToDb2() throws Exception {
+        DatabaseContextHolder.setCurrentDb("db2");
         String proc1OldDef = databaseService.getDbObjects().stream()
                 .filter(o -> o.name().equals("proc1"))
                 .findFirst().get().definition();
@@ -252,17 +251,19 @@ class SynchronizationTestsIT {
                 .formatted(proc1NewDef);
 
         // Dry run true
-        String dryRunResponse = synchronizerService.syncRepoToDb(Constants.HEAD, "db2", true, false);
+        List<SyncResult> dryRunResponse = synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db2"), true, false);
 
-        assertEquals(expectedResponse, dryRunResponse);
+        assertEquals(SyncResult.Status.SUCCESS_DRY_RUN, dryRunResponse.getFirst().status());
+        assertEquals(expectedResponse, dryRunResponse.getFirst().message());
         var expectedOldProc1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1OldDef);
         assertObjectExistInDb("db2", expectedOldProc1);
 
         // Dry run false
-        String response = synchronizerService.syncRepoToDb(Constants.HEAD, "db2", true, false);
+        List<SyncResult> response = synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db2"), false, false);
 
-        assertEquals(expectedResponse, response);
-        var expectedNewProc1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1OldDef);
+        assertEquals(SyncResult.Status.SYNCED, response.getFirst().status());
+        assertEquals(expectedResponse, response.getFirst().message());
+        var expectedNewProc1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1NewDef);
         assertObjectExistInDb("db2", expectedNewProc1);
     }
 
@@ -286,8 +287,9 @@ class SynchronizationTestsIT {
         DatabaseContextHolder.setCurrentDb("db2");
         databaseService.applyChangesToDatabase(List.of(dbObject));
 
-        assertThrows(DbOutOfSyncException.class, () ->
-                synchronizerService.syncRepoToDb(Constants.HEAD, "db2", false, false));
+        var actualOutOfSyncResponse =
+                synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db2"), false, false);
+        assertEquals(SyncResult.Status.SKIPPED_OUT_OF_SYNC, actualOutOfSyncResponse.getFirst().status());
 
         // Dryrun set to true
         var actualDryRunResponse = synchronizerService.syncDbToRepo("db2", true);
