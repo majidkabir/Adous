@@ -25,8 +25,8 @@ public class OpenApiConfig {
                                 .name("Majid Ghafouri")
                                 .email("majid.ghafouri@example.com"))
                         .license(new License()
-                                .name("License")
-                                .url("https://github.com/majid/adous")))
+                                .name("MIT License")
+                                .url("https://opensource.org/licenses/MIT")))
                 .servers(List.of(
                         new Server()
                                 .url("http://localhost:8080")
