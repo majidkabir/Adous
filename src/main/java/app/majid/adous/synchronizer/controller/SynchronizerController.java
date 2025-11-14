@@ -39,6 +39,36 @@ public class SynchronizerController {
         this.synchronizerService = synchronizerService;
     }
 
+    @PostMapping("/init-repo/{dbName}")
+    @Operation(
+            summary = "Initialize repository with database",
+            description = "Initializes an empty Git repository with all database objects from the specified database. This operation can only be performed on an empty repository."
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Successfully initialized repository",
+                    content = @Content(schema = @Schema(implementation = SyncDbToRepoResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Repository is not empty or database has no objects",
+                    content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class))),
+            @ApiResponse(responseCode = "500", description = "Internal server error or Git operation failed",
+                    content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
+    })
+    public SyncDbToRepoResponse initRepo(
+            @Parameter(description = "Database name to initialize repository from", required = true)
+            @PathVariable String dbName)
+            throws IOException, GitAPIException {
+        logger.info("Received request to initialize repository with database: {}", dbName);
+
+        String result = synchronizerService.initRepo(dbName);
+
+        logger.info("Successfully initialized repository with database: {}", dbName);
+        return new SyncDbToRepoResponse(
+                dbName,
+                false,
+                result,
+                "Repository initialized successfully"
+        );
+    }
+
     @PostMapping("/db-to-repo/{dbName}")
     @Operation(
             summary = "Sync database to repository",

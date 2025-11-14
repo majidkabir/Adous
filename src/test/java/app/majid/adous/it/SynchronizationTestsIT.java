@@ -44,7 +44,7 @@ class SynchronizationTestsIT {
     DatabaseService databaseService;
 
     @Test
-    void testSynchronizerServiceNotNull() throws Exception {
+    void testSynchronizerService() throws Exception {
         synchronizerService.initRepo("db1");
         assertInitializedRepoState();
 

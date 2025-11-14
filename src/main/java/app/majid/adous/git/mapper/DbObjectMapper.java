@@ -1,6 +1,5 @@
 package app.majid.adous.git.mapper;
 
-import app.majid.adous.common.constants.GitConstants;
 import app.majid.adous.synchronizer.model.DbObject;
 import app.majid.adous.synchronizer.model.DbObjectType;
 import org.slf4j.Logger;
@@ -16,6 +15,7 @@ public class DbObjectMapper {
 
     private static final Logger logger = LoggerFactory.getLogger(DbObjectMapper.class);
     private static final int SQL_EXTENSION_LENGTH = 4; // ".sql"
+    private static final String SQL_FILE_EXTENSION = ".sql";
 
     /**
      * Creates a DbObject from a Git repository file path.
@@ -51,7 +51,7 @@ public class DbObjectMapper {
             throw new IllegalArgumentException("Path cannot be null or empty");
         }
 
-        if (!path.endsWith(GitConstants.SQL_FILE_EXTENSION)) {
+        if (!path.endsWith(SQL_FILE_EXTENSION)) {
             throw new IllegalArgumentException("Invalid file type: " + path);
         }
     }

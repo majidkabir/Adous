@@ -79,7 +79,57 @@ The application will start on `http://localhost:8080`
 
 Access Swagger UI at: `http://localhost:8080/swagger-ui.html`
 
+### Quick Start Workflow
+
+1. **Initialize Repository** (first time setup):
+   ```bash
+   curl -X POST http://localhost:8080/api/synchronizer/init-repo/myDatabase
+   ```
+   This creates the initial commit with all database objects.
+
+2. **Make changes to your database** (create/modify stored procedures, functions, views, triggers)
+
+3. **Sync database to repository**:
+   ```bash
+   curl -X POST "http://localhost:8080/api/synchronizer/db-to-repo/myDatabase?dryRun=false"
+   ```
+
+4. **Sync repository to other databases**:
+   ```bash
+   curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
+     -H "Content-Type: application/json" \
+     -d '{"commitish": "main", "dbs": ["testDatabase", "stagingDatabase"], "dryRun": false, "force": false}'
+   ```
+
 ## API Endpoints
+
+### Initialize Repository with Database
+
+Initializes an empty Git repository with all database objects from a specified database. This is typically the first operation when setting up Adous:
+
+```bash
+POST /api/synchronizer/init-repo/{dbName}
+```
+
+**Parameters:**
+- `dbName` (path): Name of the database to initialize the repository from
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/synchronizer/init-repo/myDatabase
+```
+
+**Response:**
+```json
+{
+  "dbName": "myDatabase",
+  "dryRun": false,
+  "result": "Repository initialized with 25 objects",
+  "message": "Repository initialized successfully"
+}
+```
+
+**Note:** This operation can only be performed on an empty repository. Use this when setting up a new Git repository for the first time.
 
 ### Sync Database to Repository
 
@@ -87,6 +137,15 @@ Synchronizes database objects to the Git repository:
 
 ```bash
 POST /api/synchronizer/db-to-repo/{dbName}?dryRun=false
+```
+
+**Parameters:**
+- `dbName` (path): Name of the database to sync
+- `dryRun` (query, optional): If true, previews changes without committing (default: false)
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/synchronizer/db-to-repo/myDatabase?dryRun=false"
 ```
 
 ### Sync Repository to Databases
@@ -103,6 +162,24 @@ Content-Type: application/json
   "dryRun": false,
   "force": false
 }
+```
+
+**Request Body:**
+- `commitish`: Git commit, branch, or tag reference to sync from
+- `dbs`: List of database names to sync
+- `dryRun`: Preview changes without applying (default: false)
+- `force`: Force sync even if database is out of sync (default: false)
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
+  -H "Content-Type: application/json" \
+  -d '{
+    "commitish": "main",
+    "dbs": ["database1", "database2"],
+    "dryRun": false,
+    "force": false
+  }'
 ```
 
 ## How It Works
