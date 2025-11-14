@@ -1,0 +1,14 @@
+spring:
+  application:
+    authentication:
+      token: dummy-token-for-test
+    database:
+      default-schema: dbo
+
+github:
+  local-mode-for-test: true
+  base-root-path: base
+  diff-root-path: diff
+  prefix-path: test-prefix
+  token: dummy-token-for-test
+

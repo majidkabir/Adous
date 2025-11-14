@@ -236,8 +236,13 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
             List<DbObject> dbChanges = gitService.getRepoChangesToApplyToDb(commitish, dbName);
             logger.debug("Found {} changes to apply to database '{}'", dbChanges.size(), dbName);
 
-            if (!dryRun && !dbChanges.isEmpty()) {
-                applyChangesTransactionally(dbChanges, dbName, commitish);
+            if (!dryRun) {
+                if (!dbChanges.isEmpty()) {
+                    applyChangesTransactionally(dbChanges, dbName, commitish);
+                } else {
+                    gitService.addTags(List.of(dbName), commitish);
+                    logger.info("Database '{}' already is already in sync with repo, tagged commit", dbName);
+                }
             }
 
             return dbChanges.toString();
