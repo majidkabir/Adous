@@ -1,6 +1,5 @@
 package app.majid.adous.db.service;
 
-import app.majid.adous.common.constants.DatabaseConstants;
 import app.majid.adous.synchronizer.db.DatabaseService;
 import app.majid.adous.synchronizer.model.DbObject;
 import app.majid.adous.synchronizer.model.DbObjectType;
@@ -38,7 +37,7 @@ public class MSSQLDatabaseService implements DatabaseService {
     }
 
     /**
-     * Retrieves all database objects (procedures, functions, views, triggers) from the database.
+     * Retrieves all database objects (procedures, functions, views, triggers, synonyms, table types) from the database.
      *
      * @return List of database objects with their definitions
      */
@@ -46,6 +45,7 @@ public class MSSQLDatabaseService implements DatabaseService {
     public List<DbObject> getDbObjects() {
         logger.debug("Fetching database objects from SQL Server");
 
+        // Get objects from sys.sql_modules (procedures, functions, views, triggers)
         List<DbObject> objects = jdbcTemplate.query(buildGetObjectsQuery(), (rs, rowNum) ->
                 new DbObject(
                         rs.getString("schema_name"),
@@ -54,6 +54,12 @@ public class MSSQLDatabaseService implements DatabaseService {
                         rs.getString("definition")
                 )
         );
+
+        // Get synonyms
+        objects.addAll(getSynonyms());
+
+        // Get table types
+        objects.addAll(getTableTypes());
 
         logger.debug("Retrieved {} database objects", objects.size());
         return objects;
@@ -90,6 +96,164 @@ public class MSSQLDatabaseService implements DatabaseService {
                     AND s.name != 'sys'
                 ORDER BY s.name, o.type, o.name
                 """;
+    }
+
+    /**
+     * Retrieves all synonyms from the database.
+     *
+     * @return List of synonym database objects
+     */
+    private List<DbObject> getSynonyms() {
+        logger.debug("Fetching synonyms from SQL Server");
+
+        String synonymQuery = """
+                SELECT
+                    SCHEMA_NAME(schema_id) AS schema_name,
+                    name AS name,
+                    base_object_name AS target_object
+                FROM sys.synonyms
+                WHERE is_ms_shipped = 0
+                ORDER BY schema_name, name
+                """;
+
+        List<DbObject> synonyms = jdbcTemplate.query(synonymQuery, (rs, rowNum) -> {
+            String schemaName = rs.getString("schema_name");
+            String name = rs.getString("name");
+            String targetObject = rs.getString("target_object");
+
+            String definition = String.format(
+                    "CREATE SYNONYM [%s].[%s] FOR %s;%nGO",
+                    schemaName, name, targetObject
+            );
+
+            return new DbObject(schemaName, name, DbObjectType.SYNONYM, definition);
+        });
+
+        logger.debug("Retrieved {} synonyms", synonyms.size());
+        return synonyms;
+    }
+
+    /**
+     * Retrieves all user-defined table types from the database.
+     *
+     * @return List of table type database objects
+     */
+    private List<DbObject> getTableTypes() {
+        logger.debug("Fetching table types from SQL Server");
+
+        String tableTypeQuery = """
+                SELECT
+                    SCHEMA_NAME(tt.schema_id) AS schema_name,
+                    tt.name AS name,
+                    tt.type_table_object_id AS object_id
+                FROM sys.table_types tt
+                WHERE tt.is_user_defined = 1
+                ORDER BY schema_name, name
+                """;
+
+        List<DbObject> tableTypes = jdbcTemplate.query(tableTypeQuery, (rs, rowNum) -> {
+            String schemaName = rs.getString("schema_name");
+            String name = rs.getString("name");
+            int objectId = rs.getInt("object_id");
+
+            String definition = buildTableTypeDefinition(schemaName, name, objectId);
+
+            return new DbObject(schemaName, name, DbObjectType.TABLE_TYPE, definition);
+        });
+
+        logger.debug("Retrieved {} table types", tableTypes.size());
+        return tableTypes;
+    }
+
+    /**
+     * Builds the CREATE TYPE definition for a table type by retrieving its columns.
+     *
+     * @param schemaName The schema name
+     * @param typeName The type name
+     * @param objectId The object ID of the table type
+     * @return Complete CREATE TYPE statement
+     */
+    private String buildTableTypeDefinition(String schemaName, String typeName, int objectId) {
+        String columnQuery = """
+                SELECT
+                    c.column_id,
+                    c.name AS column_name,
+                    TYPE_NAME(c.user_type_id) AS data_type,
+                    c.max_length,
+                    c.precision,
+                    c.scale,
+                    c.is_nullable,
+                    c.is_identity,
+                    ISNULL(ic.seed_value, 0) AS identity_seed,
+                    ISNULL(ic.increment_value, 0) AS identity_increment
+                FROM sys.columns c
+                LEFT JOIN sys.identity_columns ic ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                WHERE c.object_id = ?
+                ORDER BY c.column_id
+                """;
+
+        List<String> columns = jdbcTemplate.query(columnQuery, (rs, rowNum) -> {
+            String columnName = rs.getString("column_name");
+            String dataType = rs.getString("data_type");
+            int maxLength = rs.getInt("max_length");
+            int precision = rs.getInt("precision");
+            int scale = rs.getInt("scale");
+            boolean isNullable = rs.getBoolean("is_nullable");
+            boolean isIdentity = rs.getBoolean("is_identity");
+            int identitySeed = rs.getInt("identity_seed");
+            int identityIncrement = rs.getInt("identity_increment");
+
+            StringBuilder columnDef = new StringBuilder();
+            columnDef.append("[").append(columnName).append("] ");
+            columnDef.append(formatDataType(dataType, maxLength, precision, scale));
+
+            if (isIdentity) {
+                columnDef.append(" IDENTITY(").append(identitySeed).append(",")
+                        .append(identityIncrement).append(")");
+            }
+
+            if (!isNullable) {
+                columnDef.append(" NOT NULL");
+            } else {
+                columnDef.append(" NULL");
+            }
+
+            return columnDef.toString();
+        }, objectId);
+
+        StringBuilder definition = new StringBuilder();
+        definition.append("CREATE TYPE [").append(schemaName).append("].[").append(typeName).append("] AS TABLE\n(\n");
+        definition.append("    ").append(String.join(",\n    ", columns));
+        definition.append("\n);\nGO");
+
+        return definition.toString();
+    }
+
+    /**
+     * Formats a data type with its length, precision, and scale.
+     *
+     * @param dataType The base data type
+     * @param maxLength The maximum length (for string types)
+     * @param precision The precision (for numeric types)
+     * @param scale The scale (for numeric types)
+     * @return Formatted data type string
+     */
+    private String formatDataType(String dataType, int maxLength, int precision, int scale) {
+        return switch (dataType.toLowerCase()) {
+            case "varchar", "char", "varbinary", "binary" -> {
+                int actualLength = maxLength == -1 ? -1 : maxLength;
+                yield dataType + "(" + (actualLength == -1 ? "MAX" : String.valueOf(actualLength)) + ")";
+            }
+            case "nvarchar", "nchar" -> {
+                int actualLength = maxLength == -1 ? -1 : maxLength / 2;
+                yield dataType + "(" + (actualLength == -1 ? "MAX" : String.valueOf(actualLength)) + ")";
+            }
+            case "decimal", "numeric" ->
+                    dataType + "(" + precision + ", " + scale + ")";
+            case "datetime2", "time", "datetimeoffset" ->
+                    scale > 0 ? dataType + "(" + scale + ")" : dataType;
+            default -> dataType;
+        };
     }
 
     /**
@@ -169,10 +333,13 @@ public class MSSQLDatabaseService implements DatabaseService {
      * Builds a DROP statement for a database object.
      */
     private String buildDropQuery(DbObject obj) {
+        // TABLE_TYPE needs "DROP TYPE" syntax
+        String dropKeyword = obj.type() == DbObjectType.TABLE_TYPE ? "TYPE" : obj.type().toString();
+
         return """
             DROP %s IF EXISTS [%s].[%s];
             GO
-            """.formatted(obj.type(), obj.schema(), obj.name());
+            """.formatted(dropKeyword, obj.schema(), obj.name());
     }
 
     /**

@@ -92,7 +92,15 @@ class SynchronizationTestsIT {
                         "base/FUNCTION/dbo/func2.sql",
                         "base/FUNCTION/dbo/prefix1_func1.sql",
                         "base/FUNCTION/dbo/prefix2_func1.sql",
-                        "base/FUNCTION/dbo/prefix3_func1.sql"
+                        "base/FUNCTION/dbo/prefix3_func1.sql",
+                        // New: Synonyms
+                        "base/SYNONYM/dbo/syn_Table1.sql",
+                        "base/SYNONYM/dbo/syn_RemoteTable.sql",
+                        "base/SYNONYM/dbo/prefix1_syn_Table.sql",
+                        // New: Table Types
+                        "base/TABLE_TYPE/dbo/tt_UserList.sql",
+                        "base/TABLE_TYPE/dbo/tt_OrderDetails.sql",
+                        "base/TABLE_TYPE/dbo/prefix1_tt_List.sql"
                 ).map(this::assertFileExists).toArray(Executable[]::new)
         );
 
@@ -134,6 +142,16 @@ class SynchronizationTestsIT {
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE FUNCTION func1() RETURNS INT BEGIN RETURN 1 END
+                                GO"""),
+                        Pair.of("base/SYNONYM/dbo/syn_Table1.sql", """
+                                CREATE SYNONYM [dbo].[syn_Table1] FOR [dbo].[table1];
+                                GO"""),
+                        Pair.of("base/TABLE_TYPE/dbo/tt_UserList.sql", """
+                                CREATE TYPE [dbo].[tt_UserList] AS TABLE
+                                (
+                                    [UserId] int NOT NULL,
+                                    [UserName] nvarchar(100) NOT NULL
+                                );
                                 GO""")
                 ).map(this::assertFileContent).toArray(Executable[]::new)
         );
@@ -152,12 +170,16 @@ class SynchronizationTestsIT {
                 ).map(this::assertFileExists).toArray(Executable[]::new)
         );
 
-        assertAll("Checking non-existence of all ignored database objects in git repo",
+        assertAll("Checking non-existence of all ignored or unchanged database objects in git repo",
                 Stream.of(
                         "diff/db2/PROCEDURE/dbo/prefix1_proc2.sql",
                         "diff/db2/VIEW/dbo/prefix3_view2.sql",
                         "diff/db2/TRIGGER/dbo/prefix2_trigger1.sql",
-                        "diff/db2/FUNCTION/dbo/prefix4_func2.sql"
+                        "diff/db2/FUNCTION/dbo/prefix4_func2.sql",
+                        "diff/db2/SYNONYM/dbo/syn_Table1.sql",
+                        "diff/db2/SYNONYM/dbo/syn_RemoteTable.sql",
+                        "diff/db2/TABLE_TYPE/dbo/tt_UserList.sql",
+                        "diff/db2/TABLE_TYPE/dbo/tt_OrderDetails.sql"
                 ).map(this::assertFileNotExists).toArray(Executable[]::new)
         );
 
@@ -237,7 +259,9 @@ class SynchronizationTestsIT {
         DatabaseContextHolder.setCurrentDb("db2");
         String proc1OldDef = databaseService.getDbObjects().stream()
                 .filter(o -> o.name().equals("proc1"))
-                .findFirst().get().definition();
+                .findFirst()
+                .map(DbObject::definition)
+                .orElseThrow(() -> new AssertionError("proc1 not found in db2 before update"));
         String proc1NewDef = """
                         SET ANSI_NULLS ON;
                         GO
@@ -349,7 +373,7 @@ class SynchronizationTestsIT {
     }
 
     private Executable assertFileContent(Pair<String, String> fileContent) {
-        String expected = fileContent.getSecond() != null ? normalizeLineEndings(fileContent.getSecond()) : null;
+        String expected = normalizeLineEndings(fileContent.getSecond());
         String actual = gitService.getFileContentAtRef("HEAD", fileContent.getFirst())
                 .map(this::normalizeLineEndings).orElse(null);
 

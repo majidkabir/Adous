@@ -32,6 +32,14 @@ CREATE VIEW prefix2_view1 AS SELECT id, name, 'p2' AS prefix FROM table1;
 CREATE VIEW prefix3_view1 AS SELECT id, name, 'p3' AS prefix FROM table1;
 CREATE VIEW prefix4_view1 AS SELECT id, name, 'p4' AS prefix FROM table1;
 
+CREATE TYPE tt_UserList AS TABLE (UserId INT NOT NULL, UserName NVARCHAR(100) NOT NULL);
+CREATE TYPE tt_OrderDetails AS TABLE (OrderId INT NOT NULL, ProductId INT NOT NULL, Quantity INT NOT NULL);
+CREATE TYPE prefix1_tt_List AS TABLE (Id INT NOT NULL, Value NVARCHAR(50) NOT NULL);
+
+CREATE SYNONYM syn_Table1 FOR dbo.table1;
+CREATE SYNONYM syn_RemoteTable FOR [RemoteServer].[RemoteDB].[dbo].[RemoteTable];
+CREATE SYNONYM prefix1_syn_Table FOR dbo.table1;
+
 CREATE DATABASE dbtest2;
 
 USE dbtest2;
@@ -64,3 +72,12 @@ CREATE VIEW prefix1_view1 AS SELECT id, name, 'p1' AS prefix FROM table1;
 CREATE VIEW prefix2_view1 AS SELECT id, name, 'p2' AS prefix FROM table1;
 CREATE VIEW prefix3_view1 AS SELECT id, name, 'ignored' AS prefix FROM table1;
 CREATE VIEW prefix4_view1 AS SELECT id, name, 'p4' AS prefix FROM table1;
+
+CREATE TYPE tt_UserList AS TABLE (UserId INT NOT NULL, UserName NVARCHAR(100) NOT NULL);
+CREATE TYPE tt_OrderDetails AS TABLE (OrderId INT NOT NULL, ProductId INT NOT NULL, Quantity INT NOT NULL);
+CREATE TYPE prefix1_tt_List AS TABLE (Id INT NOT NULL, Value NVARCHAR(50) NOT NULL);
+
+CREATE SYNONYM syn_Table1 FOR dbo.table1;
+CREATE SYNONYM syn_RemoteTable FOR [RemoteServer].[RemoteDB].[dbo].[RemoteTable];
+CREATE SYNONYM prefix1_syn_Table FOR dbo.table1;
+

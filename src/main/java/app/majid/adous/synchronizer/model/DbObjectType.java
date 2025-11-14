@@ -4,5 +4,7 @@ public enum DbObjectType {
     VIEW,
     FUNCTION,
     PROCEDURE,
-    TRIGGER
+    TRIGGER,
+    SYNONYM,
+    TABLE_TYPE
 }

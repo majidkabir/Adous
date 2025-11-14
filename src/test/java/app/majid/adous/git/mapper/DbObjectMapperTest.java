@@ -93,6 +93,40 @@ class DbObjectMapperTest {
         }
 
         @Test
+        @DisplayName("Should map synonym path correctly")
+        void shouldMapSynonymPath() {
+            // Arrange
+            String path = "base/SYNONYM/dbo/syn_RemoteTable.sql";
+            String definition = "CREATE SYNONYM [dbo].[syn_RemoteTable] FOR [RemoteServer].[RemoteDB].[dbo].[Table1];\nGO";
+
+            // Act
+            DbObject result = mapper.fromPath(path, definition);
+
+            // Assert
+            assertEquals("dbo", result.schema());
+            assertEquals("syn_RemoteTable", result.name());
+            assertEquals(DbObjectType.SYNONYM, result.type());
+            assertEquals(definition, result.definition());
+        }
+
+        @Test
+        @DisplayName("Should map table type path correctly")
+        void shouldMapTableTypePath() {
+            // Arrange
+            String path = "base/TABLE_TYPE/dbo/tt_UserList.sql";
+            String definition = "CREATE TYPE [dbo].[tt_UserList] AS TABLE\n(\n    [UserId] int NOT NULL,\n    [UserName] nvarchar(100) NOT NULL\n);\nGO";
+
+            // Act
+            DbObject result = mapper.fromPath(path, definition);
+
+            // Assert
+            assertEquals("dbo", result.schema());
+            assertEquals("tt_UserList", result.name());
+            assertEquals(DbObjectType.TABLE_TYPE, result.type());
+            assertEquals(definition, result.definition());
+        }
+
+        @Test
         @DisplayName("Should handle null definition")
         void shouldHandleNullDefinition() {
             // Arrange
