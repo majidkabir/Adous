@@ -52,8 +52,7 @@ public class DbObjectMapper {
         }
 
         if (!path.endsWith(GitConstants.SQL_FILE_EXTENSION)) {
-            throw new IllegalArgumentException(
-                    "Invalid file type. Expected .sql extension but got: " + path);
+            throw new IllegalArgumentException("Invalid file type: " + path);
         }
     }
 
@@ -66,8 +65,7 @@ public class DbObjectMapper {
         int thirdSlash = path.lastIndexOf('/', secondSlash - 1);
 
         if (thirdSlash < 0 || lastSlash < 0 || secondSlash < 0) {
-            throw new IllegalArgumentException(
-                    "Invalid path format. Expected '{rootPath}/{type}/{schema}/{name}.sql' but got: " + path);
+            throw new IllegalArgumentException("Invalid path: " + path);
         }
 
         String type = path.substring(thirdSlash + 1, secondSlash);
