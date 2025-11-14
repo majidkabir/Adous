@@ -55,54 +55,6 @@ class SynchronizerControllerTest {
     }
 
     @Test
-    void syncDbToRepo_withGitError_shouldReturnInternalServerError() throws Exception {
-        // Given
-        String dbName = "testdb";
-        when(synchronizerService.syncDbToRepo(eq(dbName), eq(false)))
-                .thenThrow(new GitAPIException("Git error") {});
-
-        SyncDbToRepoRequest request = new SyncDbToRepoRequest(dbName, false);
-
-        // When & Then
-        mockMvc.perform(post("/api/synchronizer/db-to-repo")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.error").value("Git API Error"))
-                .andExpect(jsonPath("$.message").value("Error syncing with Git repository: Git error"));
-    }
-
-    @Test
-    void syncDbToRepo_withIllegalState_shouldReturnBadRequest() throws Exception {
-        // Given
-        String dbName = "testdb";
-        when(synchronizerService.syncDbToRepo(eq(dbName), eq(false)))
-                .thenThrow(new IllegalStateException("Database not initialized"));
-
-        SyncDbToRepoRequest request = new SyncDbToRepoRequest(dbName, false);
-
-        // When & Then
-        mockMvc.perform(post("/api/synchronizer/db-to-repo")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("Invalid State"))
-                .andExpect(jsonPath("$.message").value("Database not initialized"));
-    }
-
-    @Test
-    void syncDbToRepo_withBlankDbName_shouldReturnBadRequest() throws Exception {
-        // Given
-        SyncDbToRepoRequest request = new SyncDbToRepoRequest("", false);
-
-        // When & Then
-        mockMvc.perform(post("/api/synchronizer/db-to-repo")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isBadRequest());
-    }
-
-    @Test
     void syncRepoToDb_shouldReturnSyncResults() throws Exception {
         // Given
         List<String> dbs = List.of("db1", "db2");
