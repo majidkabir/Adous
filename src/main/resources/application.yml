@@ -1,0 +1,48 @@
+spring:
+  application:
+    name: Adous
+    database:
+      default-schema: dbo
+
+  datasources:
+    dbs:
+      # Example database configuration
+      # database1:
+      #   url: jdbc:sqlserver://localhost:1433;databaseName=MyDB;encrypt=true;trustServerCertificate=true
+      #   username: sa
+      #   password: YourPassword
+      #   driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+
+# Git repository configuration
+github:
+  local-mode-for-test: false
+  remote-uri: ${GIT_REMOTE_URI:}
+  token: ${GIT_TOKEN:}
+  base-root-path: base
+  diff-root-path: diff
+  prefix-path: ${GIT_PREFIX_PATH:}
+  commit-username: ${GIT_COMMIT_USERNAME:Adous System}
+  commit-email: ${GIT_COMMIT_EMAIL:adous@mail.com}
+  default-branch: ${GIT_DEFAULT_BRANCH:main}
+  sync-ignore-file: ${GIT_SYNC_IGNORE_FILE:}
+
+# Actuator configuration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+# Logging configuration
+logging:
+  level:
+    root: INFO
+    app.majid.adous: DEBUG
+    org.springframework.security: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+

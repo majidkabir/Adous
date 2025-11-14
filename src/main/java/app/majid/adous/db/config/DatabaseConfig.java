@@ -1,5 +1,7 @@
 package app.majid.adous.db.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -8,12 +10,11 @@ import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
 import javax.sql.DataSource;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.logging.Logger;
 
 @Configuration
 public class DatabaseConfig {
 
-    private final Logger logger = Logger.getLogger(DatabaseConfig.class.getName());
+    private static final Logger logger = LoggerFactory.getLogger(DatabaseConfig.class);
 
     private final DbProperties dbProperties;
 
@@ -31,7 +32,7 @@ public class DatabaseConfig {
         for (Map.Entry<String, DbConfig> entry: dbs.entrySet()) {
             DataSource dataSource = buildDataSource(entry.getValue());
             dataSources.put(entry.getKey(), dataSource);
-            logger.info("Configured datasource for DB: " + entry.getKey());
+            logger.info("Configured datasource for DB: {}", entry.getKey());
         }
 
         routing.setTargetDataSources(dataSources);

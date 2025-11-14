@@ -12,6 +12,8 @@ import app.majid.adous.synchronizer.model.RepoObject;
 import app.majid.adous.synchronizer.model.SyncResult;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.lib.Constants;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -25,8 +27,14 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 
+/**
+ * Core service for synchronizing databases with Git repositories.
+ * Handles bidirectional synchronization between database objects and repository files.
+ */
 @Service
-public class DatabaseRepositorySynchronizerService {
+public class DatabaseRepositorySynchronizerService implements SynchronizerService {
+
+    private static final Logger logger = LoggerFactory.getLogger(DatabaseRepositorySynchronizerService.class);
 
     private final GitService gitService;
     private final DatabaseService databaseService;
@@ -47,8 +55,20 @@ public class DatabaseRepositorySynchronizerService {
         this.transactionTemplate = transactionTemplate;
     }
 
+    /**
+     * Initializes a repository with the database objects from the specified database.
+     * This should only be called on an empty repository.
+     *
+     * @param dbName The name of the database to initialize from
+     * @return String representation of the changes made
+     * @throws IOException if Git operations fail
+     * @throws GitAPIException if Git API operations fail
+     * @throws IllegalStateException if repository is not empty or database has no objects
+     */
     @UseDatabase("dbName")
     public String initRepo(String dbName) throws IOException, GitAPIException {
+        logger.info("Initializing repository with database: {}", dbName);
+
         if (!gitService.isEmptyRepo()) {
             throw new IllegalStateException("Cannot initialize non-empty repository");
         }
@@ -59,34 +79,78 @@ public class DatabaseRepositorySynchronizerService {
             throw new IllegalStateException("No database objects found in database: " + dbName);
         }
 
+        logger.debug("Found {} database objects to initialize repository", dbObjects.size());
+
         List<RepoObject> repoChanges = dbObjects.stream()
                 .map(o -> dbObjectToRepoObject(o, gitService.getBasePath()))
                 .filter(o -> !ignoreService.shouldIgnore(o.path()))
                 .toList();
 
+        logger.debug("After filtering, {} objects will be committed", repoChanges.size());
+
         gitService.applyChangesAndPush(repoChanges, "Repo initialized with DB: " + dbName,
                 List.of(dbName));
 
+        logger.info("Successfully initialized repository with database: {}", dbName);
         return repoChanges.toString();
     }
 
+    /**
+     * Synchronizes database changes to the repository.
+     *
+     * @param dbName The name of the database to sync
+     * @param dryRun If true, only detect changes without committing
+     * @return String representation of the changes detected/made
+     * @throws IOException if Git operations fail
+     * @throws GitAPIException if Git API operations fail
+     */
     @UseDatabase("dbName")
     public String syncDbToRepo(String dbName, boolean dryRun) throws IOException, GitAPIException {
+        logger.info("Syncing database '{}' to repository (dryRun: {})", dbName, dryRun);
+
         List<RepoObject> outOfSyncObjects = detectOutOfSyncDbObjects(dbName);
+
+        logger.debug("Found {} out-of-sync objects", outOfSyncObjects.size());
 
         if (!dryRun && !outOfSyncObjects.isEmpty()) {
             List<String> tags = isDbOnboardedInRepo(dbName) ? Collections.emptyList() : List.of(dbName);
             gitService.applyChangesAndPush(outOfSyncObjects, "Repo synced with DB: " + dbName, tags);
+            logger.info("Successfully synced {} objects from database '{}' to repository",
+                    outOfSyncObjects.size(), dbName);
+        } else if (dryRun && !outOfSyncObjects.isEmpty()) {
+            logger.info("Dry run detected {} changes for database '{}'",
+                    outOfSyncObjects.size(), dbName);
+        } else {
+            logger.info("No changes detected for database '{}'", dbName);
         }
 
         return outOfSyncObjects.toString();
     }
 
+    /**
+     * Synchronizes repository changes to multiple databases in parallel.
+     * Uses virtual threads for efficient parallel processing.
+     *
+     * @param commitish Git reference (commit, branch, tag) to sync from
+     * @param dbs List of database names to sync to
+     * @param dryRun If true, only detect changes without applying
+     * @param force If true, sync even if databases are out of sync
+     * @return List of sync results for each database
+     * @throws IOException if Git operations fail
+     */
     public List<SyncResult> syncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force)
             throws IOException {
-        if (dbs.isEmpty()) return Collections.emptyList();
+        if (dbs == null || dbs.isEmpty()) {
+            logger.debug("No databases specified for sync");
+            return Collections.emptyList();
+        }
 
+        logger.info("Syncing repository commit '{}' to {} databases (dryRun: {}, force: {})",
+                commitish, dbs.size(), dryRun, force);
+
+        // Force dry run if not syncing to HEAD
         if (!gitService.isHeadCommit(commitish)) {
+            logger.info("Commit '{}' is not HEAD, forcing dry run", commitish);
             dryRun = true;
         }
 
@@ -94,62 +158,130 @@ public class DatabaseRepositorySynchronizerService {
 
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<CompletableFuture<SyncResult>> futures = dbs.stream()
-                    .map(dbName -> CompletableFuture.supplyAsync(() -> {
-                        try {
-                            var result = syncRepoToDb(commitish, dbName, finalDryRun, force);
-                            var status = finalDryRun ? SyncResult.Status.SUCCESS_DRY_RUN : SyncResult.Status.SYNCED;
-                            return new SyncResult(dbName, status, result);
-                        } catch (DbNotOnboardedException e) {
-                            return new SyncResult(dbName, SyncResult.Status.SKIPPED_NOT_ONBOARDED, "");
-                        } catch (DbOutOfSyncException e) {
-                            return new SyncResult(dbName, SyncResult.Status.SKIPPED_OUT_OF_SYNC, "");
-                        } catch (IOException | GitAPIException e) {
-                            return new SyncResult(dbName, SyncResult.Status.FAILED, e.getMessage());
-                        }
-                    }, executor))
+                    .map(dbName -> CompletableFuture.supplyAsync(() ->
+                            syncDatabaseWithExceptionHandling(commitish, dbName, finalDryRun, force),
+                            executor))
                     .toList();
 
-            return futures.stream()
+            List<SyncResult> results = futures.stream()
                     .map(CompletableFuture::join)
                     .toList();
+
+            logSyncSummary(results);
+            return results;
         }
     }
 
+    /**
+     * Syncs a single database with proper exception handling.
+     */
+    private SyncResult syncDatabaseWithExceptionHandling(String commitish, String dbName,
+                                                         boolean dryRun, boolean force) {
+        try {
+            String result = syncRepoToDb(commitish, dbName, dryRun, force);
+            SyncResult.Status status = dryRun ? SyncResult.Status.SUCCESS_DRY_RUN : SyncResult.Status.SYNCED;
+            logger.info("Successfully synced database '{}' (status: {})", dbName, status);
+            return new SyncResult(dbName, status, result);
+        } catch (DbNotOnboardedException e) {
+            logger.warn("Database '{}' is not onboarded, skipping", dbName);
+            return new SyncResult(dbName, SyncResult.Status.SKIPPED_NOT_ONBOARDED, "");
+        } catch (DbOutOfSyncException e) {
+            logger.warn("Database '{}' is out of sync, skipping", dbName);
+            return new SyncResult(dbName, SyncResult.Status.SKIPPED_OUT_OF_SYNC, "");
+        } catch (IOException | GitAPIException e) {
+            logger.error("Failed to sync database '{}'", dbName, e);
+            return new SyncResult(dbName, SyncResult.Status.FAILED, e.getMessage());
+        }
+    }
+
+    /**
+     * Logs a summary of synchronization results.
+     */
+    private void logSyncSummary(List<SyncResult> results) {
+        long synced = results.stream().filter(r -> r.status() == SyncResult.Status.SYNCED).count();
+        long skipped = results.stream().filter(r -> r.status().name().startsWith("SKIPPED")).count();
+        long failed = results.stream().filter(r -> r.status() == SyncResult.Status.FAILED).count();
+
+        logger.info("Sync summary - Total: {}, Synced: {}, Skipped: {}, Failed: {}",
+                results.size(), synced, skipped, failed);
+    }
+
+    /**
+     * Synchronizes repository changes to a single database.
+     *
+     * @param commitish Git reference to sync from
+     * @param dbName Database name to sync to
+     * @param dryRun If true, only detect changes without applying
+     * @param force If true, sync even if database is out of sync
+     * @return String representation of changes applied
+     * @throws IOException if Git operations fail
+     * @throws GitAPIException if Git API operations fail
+     * @throws DbNotOnboardedException if database is not onboarded
+     * @throws DbOutOfSyncException if database is out of sync and force is false
+     */
     private String syncRepoToDb(String commitish, String dbName, boolean dryRun, boolean force)
             throws IOException, GitAPIException, DbNotOnboardedException, DbOutOfSyncException {
 
         try {
             DatabaseContextHolder.setCurrentDb(dbName);
 
-            if (!isDbOnboardedInRepo(dbName)) {
-                throw new DbNotOnboardedException(dbName);
-            }
+            logger.debug("Starting sync for database '{}' from commit '{}'", dbName, commitish);
+
+            validateDatabaseOnboarded(dbName);
 
             if (!force) {
-                var outOfSyncObjects = detectOutOfSyncDbObjects(dbName);
-                if (!outOfSyncObjects.isEmpty()) {
-                    throw new DbOutOfSyncException(dbName, outOfSyncObjects);
-                }
+                validateDatabaseInSync(dbName);
             }
 
             List<DbObject> dbChanges = gitService.getRepoChangesToApplyToDb(commitish, dbName);
+            logger.debug("Found {} changes to apply to database '{}'", dbChanges.size(), dbName);
 
-            if (!dryRun) {
-                transactionTemplate.execute(status -> {
-                    try {
-                        databaseService.applyChangesToDatabase(dbChanges);
-                        gitService.addTags(List.of(dbName), commitish);
-                        return null;
-                    } catch (GitAPIException | IOException e) {
-                        status.setRollbackOnly();
-                        throw new RuntimeException(e);
-                    }
-                });
+            if (!dryRun && !dbChanges.isEmpty()) {
+                applyChangesTransactionally(dbChanges, dbName, commitish);
             }
+
             return dbChanges.toString();
         } finally {
             DatabaseContextHolder.clear();
         }
+    }
+
+    /**
+     * Validates that a database has been onboarded to the repository.
+     */
+    private void validateDatabaseOnboarded(String dbName) throws IOException, DbNotOnboardedException {
+        if (!isDbOnboardedInRepo(dbName)) {
+            throw new DbNotOnboardedException(dbName);
+        }
+    }
+
+    /**
+     * Validates that a database is in sync with the repository.
+     */
+    private void validateDatabaseInSync(String dbName) throws IOException, DbOutOfSyncException {
+        List<RepoObject> outOfSyncObjects = detectOutOfSyncDbObjects(dbName);
+        if (!outOfSyncObjects.isEmpty()) {
+            throw new DbOutOfSyncException(dbName, outOfSyncObjects);
+        }
+    }
+
+    /**
+     * Applies database changes within a transaction.
+     */
+    private void applyChangesTransactionally(List<DbObject> dbChanges, String dbName, String commitish) {
+        transactionTemplate.execute(status -> {
+            try {
+                databaseService.applyChangesToDatabase(dbChanges);
+                gitService.addTags(List.of(dbName), commitish);
+                logger.info("Applied {} changes to database '{}' and tagged commit",
+                        dbChanges.size(), dbName);
+                return null;
+            } catch (GitAPIException | IOException e) {
+                logger.error("Failed to apply changes or tag commit for database '{}'", dbName, e);
+                status.setRollbackOnly();
+                throw new RuntimeException("Failed to apply database changes", e);
+            }
+        });
     }
 
     private boolean notExistsInRepoHead(RepoObject repoObject, String dbName) {

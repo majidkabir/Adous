@@ -8,6 +8,8 @@ import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -19,8 +21,14 @@ import java.util.Set;
 
 import static org.eclipse.jgit.diff.DiffEntry.ChangeType.*;
 
+/**
+ * High-level service for Git operations related to database object synchronization.
+ * Orchestrates Git repository interactions through specialized services.
+ */
 @Service
 public class GitService {
+
+    private static final Logger logger = LoggerFactory.getLogger(GitService.class);
 
     private static final Set<DiffEntry.ChangeType> ADDITION_OR_MODIFICATION = Set.of(ADD, MODIFY, RENAME, COPY);
     private static final Set<DiffEntry.ChangeType> RENAME_OR_DELETION = Set.of(RENAME, COPY, DELETE);
@@ -48,6 +56,9 @@ public class GitService {
         this.baseRootPath = gitProperties.baseRootPath();
         this.diffRootPath = gitProperties.diffRootPath();
         this.defaultBranchRef = Constants.R_HEADS + gitProperties.defaultBranch();
+
+        logger.info("GitService initialized with base path: {}, diff path: {}",
+                baseRootPath, diffRootPath);
     }
 
     public Optional<String> getFileContent(ObjectId id) {

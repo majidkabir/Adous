@@ -3,6 +3,8 @@ package app.majid.adous.synchronizer.controller;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.ConstraintViolationException;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -15,11 +17,17 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Global exception handler for REST controllers.
+ * Provides consistent error responses across the application.
+ */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    private static final Logger logger = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
     /**
-     * Handle IOException
+     * Handles IO exceptions that occur during file or repository operations.
      */
     @ExceptionHandler(IOException.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -61,7 +69,7 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Handle validation errors for @Valid annotations
+     * Handles validation errors for @Valid annotations on request bodies.
      */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
@@ -74,6 +82,8 @@ public class GlobalExceptionHandler {
             errors.put(fieldName, errorMessage);
         });
 
+        logger.warn("Validation failed: {}", errors);
+
         return new ValidationErrorResponse(
                 HttpStatus.BAD_REQUEST.value(),
                 "Validation Failed",
@@ -83,12 +93,13 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Handle constraint violation exceptions
+     * Handles constraint violation exceptions from bean validation.
      */
     @ExceptionHandler(ConstraintViolationException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ErrorResponse handleConstraintViolation(
             ConstraintViolationException ex, WebRequest request) {
+        logger.warn("Constraint violation: {}", ex.getMessage());
         return new ErrorResponse(
                 HttpStatus.BAD_REQUEST.value(),
                 "Validation Error",
@@ -98,12 +109,13 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Handle IllegalArgumentException
+     * Handles illegal argument exceptions (e.g., invalid path formats).
      */
     @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ErrorResponse handleIllegalArgumentException(
             IllegalArgumentException ex, WebRequest request) {
+        logger.warn("Invalid argument: {}", ex.getMessage());
         return new ErrorResponse(
                 HttpStatus.BAD_REQUEST.value(),
                 "Invalid Argument",
@@ -113,11 +125,12 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Handle all other exceptions
+     * Handles all unhandled exceptions as a fallback.
      */
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ErrorResponse handleGlobalException(Exception ex, WebRequest request) {
+        logger.error("Unexpected error occurred", ex);
         return new ErrorResponse(
                 HttpStatus.INTERNAL_SERVER_ERROR.value(),
                 "Internal Server Error",

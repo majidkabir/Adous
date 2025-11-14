@@ -13,17 +13,25 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
 import java.util.List;
 
+/**
+ * REST controller for database and repository synchronization operations.
+ * Provides endpoints for bidirectional sync between databases and Git repository.
+ */
 @RestController
 @RequestMapping("/api/synchronizer")
 @Validated
 @Tag(name = "Database Synchronizer", description = "APIs for synchronizing databases with Git repository")
 public class SynchronizerController {
+
+    private static final Logger logger = LoggerFactory.getLogger(SynchronizerController.class);
 
     private final DatabaseRepositorySynchronizerService synchronizerService;
 
@@ -74,12 +82,19 @@ public class SynchronizerController {
     })
     public List<SyncResult> syncRepoToDb(@Valid @RequestBody SyncRepoToDbRequest request)
             throws IOException {
-        return synchronizerService.syncRepoToDb(
+        logger.info("Received request to sync repository '{}' to {} database(s) (dryRun: {}, force: {})",
+                request.commitish(), request.dbs().size(), request.dryRun(), request.force());
+
+        List<SyncResult> results = synchronizerService.syncRepoToDb(
                 request.commitish(),
                 request.dbs(),
                 request.dryRun(),
                 request.force()
         );
+
+        logger.info("Completed repository to database sync request with {} results", results.size());
+
+        return results;
     }
 }
 
