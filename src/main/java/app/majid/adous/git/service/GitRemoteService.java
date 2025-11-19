@@ -26,6 +26,7 @@ public class GitRemoteService {
         try (Git git = new Git(repo)) {
             git.push()
                     .setRemote("origin")
+                    .setPushTags()
                     .add(branchRef)
                     .setCredentialsProvider(creds)
                     .call();
