@@ -1,0 +1,57 @@
+# Git files
+.git/
+.gitignore
+.gitattributes
+
+# Build artifacts
+build/
+target/
+.gradle/
+*.jar
+*.war
+*.ear
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+
+# Documentation (not needed in image)
+*.md
+!README.md
+
+# Kubernetes/Helm files
+helm/
+k8s/
+
+# CI/CD files
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# Test files
+*.test
+
+# Node modules (if any)
+node_modules/
+
