@@ -108,6 +108,9 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
     public String syncDbToRepo(String dbName, boolean dryRun) throws IOException, GitAPIException {
         logger.info("Syncing database '{}' to repository (dryRun: {})", dbName, dryRun);
 
+        // Ensure local repo is up to date
+        gitService.syncRemote();
+
         List<RepoObject> outOfSyncObjects = detectOutOfSyncDbObjects(dbName);
 
         logger.debug("Found {} out-of-sync objects", outOfSyncObjects.size());
@@ -139,7 +142,7 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
      * @throws IOException if Git operations fail
      */
     public List<SyncResult> syncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force)
-            throws IOException {
+            throws IOException, GitAPIException {
         if (dbs == null || dbs.isEmpty()) {
             logger.debug("No databases specified for sync");
             return Collections.emptyList();
@@ -147,6 +150,9 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
 
         logger.info("Syncing repository commit '{}' to {} databases (dryRun: {}, force: {})",
                 commitish, dbs.size(), dryRun, force);
+
+        // Ensure local repo is up to date
+        gitService.syncRemote();
 
         // Force dry run if not syncing to HEAD
         if (!gitService.isHeadCommit(commitish)) {

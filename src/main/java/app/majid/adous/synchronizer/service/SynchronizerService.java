@@ -48,6 +48,6 @@ public interface SynchronizerService {
      * @throws IOException if Git operations fail
      */
     List<SyncResult> syncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force)
-            throws IOException;
+            throws IOException, GitAPIException;
 }
 
