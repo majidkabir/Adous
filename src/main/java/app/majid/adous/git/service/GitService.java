@@ -116,6 +116,10 @@ public class GitService {
         remoteService.push(commitish);
     }
 
+    public void syncRemote() throws GitAPIException {
+        remoteService.sync();
+    }
+
     public boolean isEmptyRepo() throws IOException {
         return gitRepository.isEmptyRepo();
     }

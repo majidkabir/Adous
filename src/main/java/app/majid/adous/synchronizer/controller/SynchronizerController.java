@@ -111,7 +111,7 @@ public class SynchronizerController {
                     content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
     })
     public List<SyncResult> syncRepoToDb(@Valid @RequestBody SyncRepoToDbRequest request)
-            throws IOException {
+            throws IOException, GitAPIException {
         logger.info("Received request to sync repository '{}' to {} database(s) (dryRun: {}, force: {})",
                 request.commitish(), request.dbs().size(), request.dryRun(), request.force());
 
