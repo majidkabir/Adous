@@ -165,12 +165,23 @@ public class SqlEquivalenceCheckerService {
     /**
      * Removes default schema prefixes from object names.
      * For example, "CREATE PROCEDURE dbo.MyProc" becomes "CREATE PROCEDURE MyProc"
+     * Also removes default schema from table references like "FROM dbo.TableName"
      * This ensures that objects with and without explicit schema prefixes are treated as equivalent.
      */
     private String removeSchemaPrefixes(String sql) {
-        return sql.replaceAll(
+        // Remove schema from CREATE/ALTER object definitions
+        String result = sql.replaceAll(
                 "(create|alter)\\s+(procedure|function|view|trigger)\\s+(?:\\[?%s+\\]?\\.)?".formatted(defaultSchema),
                 "$1 $2 "
         );
+
+        // Remove default schema from table references (FROM, JOIN, etc.)
+        // Pattern: dbo.tablename or [dbo].tablename or dbo.[tablename] or [dbo].[tablename]
+        result = result.replaceAll(
+                "\\b" + defaultSchema + "\\.",
+                ""
+        );
+
+        return result;
     }
 }
