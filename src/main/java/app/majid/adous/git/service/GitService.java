@@ -54,7 +54,7 @@ public class GitService {
         this.remoteService = remoteService;
         this.dbObjectMapper = dbObjectMapper;
         this.baseRootPath = gitProperties.baseRootPath();
-        this.diffRootPath = gitProperties.diffRootPath();
+        this.diffRootPath = gitProperties.diffRootPath() + "/" + gitProperties.prefixPath();
         this.defaultBranchRef = Constants.R_HEADS + gitProperties.defaultBranch();
 
         logger.info("GitService initialized with base path: {}, diff path: {}",
