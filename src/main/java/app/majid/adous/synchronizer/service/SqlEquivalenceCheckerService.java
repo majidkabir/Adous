@@ -56,7 +56,9 @@ public class SqlEquivalenceCheckerService {
         }
 
         String withoutComments = removeCommentsAndNormalizeBasics(sql);
-        String createStatement = extractCreateStatement(withoutComments);
+        // Remove square brackets from identifiers: [ident] -> ident to make quoted/unquoted equal
+        String unquotedIdentifiers = withoutComments.replaceAll("\\[(\\w+)]", "$1");
+        String createStatement = extractCreateStatement(unquotedIdentifiers);
         String withoutAlter = replaceCreateOrAlterWithCreate(createStatement);
         return removeSchemaPrefixes(withoutAlter);
     }
