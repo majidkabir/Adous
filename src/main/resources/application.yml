@@ -3,15 +3,15 @@ spring:
     name: Adous
     database:
       default-schema: dbo
-
+    authentication:
+      token: test-token
   datasources:
     dbs:
-      # Example database configuration
-      # database1:
-      #   url: jdbc:sqlserver://localhost:1433;databaseName=MyDB;encrypt=true;trustServerCertificate=true
-      #   username: sa
-      #   password: YourPassword
-      #   driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+#       database2:
+#         url: jdbc:sqlserver://localhost;databaseName=GBRWMS;encrypt=false
+#         username: sa
+#         password: P@ssw0rd
+#         driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
 
 # Git repository configuration
 github:
@@ -31,10 +31,13 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: when-authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 # Logging configuration
 logging:

@@ -162,52 +162,52 @@ class SynchronizationTestsIT {
 
         assertAll("Checking existence of all non-ignored database objects in git repo",
                 Stream.of(
-                        "diff/db2/PROCEDURE/dbo/proc1.sql",
-                        "diff/db2/PROCEDURE/dbo/prefix4_proc1.sql",
-                        "diff/db2/TRIGGER/dbo/trigger1.sql",
-                        "diff/db2/VIEW/dbo/view1.sql",
-                        "diff/db2/FUNCTION/dbo/func1.sql"
+                        "diff/test-prefix/db2/PROCEDURE/dbo/proc1.sql",
+                        "diff/test-prefix/db2/PROCEDURE/dbo/prefix4_proc1.sql",
+                        "diff/test-prefix/db2/TRIGGER/dbo/trigger1.sql",
+                        "diff/test-prefix/db2/VIEW/dbo/view1.sql",
+                        "diff/test-prefix/db2/FUNCTION/dbo/func1.sql"
                 ).map(this::assertFileExists).toArray(Executable[]::new)
         );
 
         assertAll("Checking non-existence of all ignored or unchanged database objects in git repo",
                 Stream.of(
-                        "diff/db2/PROCEDURE/dbo/prefix1_proc2.sql",
-                        "diff/db2/VIEW/dbo/prefix3_view2.sql",
-                        "diff/db2/TRIGGER/dbo/prefix2_trigger1.sql",
-                        "diff/db2/FUNCTION/dbo/prefix4_func2.sql",
-                        "diff/db2/SYNONYM/dbo/syn_Table1.sql",
-                        "diff/db2/SYNONYM/dbo/syn_RemoteTable.sql",
-                        "diff/db2/TABLE_TYPE/dbo/tt_UserList.sql",
-                        "diff/db2/TABLE_TYPE/dbo/tt_OrderDetails.sql"
+                        "diff/test-prefix/db2/PROCEDURE/dbo/prefix1_proc2.sql",
+                        "diff/test-prefix/db2/VIEW/dbo/prefix3_view2.sql",
+                        "diff/test-prefix/db2/TRIGGER/dbo/prefix2_trigger1.sql",
+                        "diff/test-prefix/db2/FUNCTION/dbo/prefix4_func2.sql",
+                        "diff/test-prefix/db2/SYNONYM/dbo/syn_Table1.sql",
+                        "diff/test-prefix/db2/SYNONYM/dbo/syn_RemoteTable.sql",
+                        "diff/test-prefix/db2/TABLE_TYPE/dbo/tt_UserList.sql",
+                        "diff/test-prefix/db2/TABLE_TYPE/dbo/tt_OrderDetails.sql"
                 ).map(this::assertFileNotExists).toArray(Executable[]::new)
         );
 
         assertAll("Checking definitions of selected database objects in git repo",
                 Stream.of(
-                        Pair.of("diff/db2/PROCEDURE/dbo/proc1.sql", """
+                        Pair.of("diff/test-prefix/db2/PROCEDURE/dbo/proc1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 11 executed' AS Message; END
                                 GO"""),
-                        Pair.of("diff/db2/PROCEDURE/dbo/prefix4_proc1.sql", ""),
-                        Pair.of("diff/db2/TRIGGER/dbo/trigger1.sql", """
+                        Pair.of("diff/test-prefix/db2/PROCEDURE/dbo/prefix4_proc1.sql", ""),
+                        Pair.of("diff/test-prefix/db2/TRIGGER/dbo/trigger1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE TRIGGER trigger1 ON table1 AFTER INSERT AS BEGIN INSERT INTO table1 (name) VALUES ('test name 11'); END
                                 GO"""),
-                        Pair.of("diff/db2/VIEW/dbo/view1.sql", """
+                        Pair.of("diff/test-prefix/db2/VIEW/dbo/view1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE VIEW view1 AS SELECT id, 'p1' AS prefix FROM table1
                                 GO"""),
-                        Pair.of("diff/db2/FUNCTION/dbo/func1.sql", """
+                        Pair.of("diff/test-prefix/db2/FUNCTION/dbo/func1.sql", """
                                 SET ANSI_NULLS ON;
                                 GO
                                 SET QUOTED_IDENTIFIER ON;
@@ -269,10 +269,8 @@ class SynchronizationTestsIT {
                         GO
                         CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 1 UPDATED executed' AS Message; END\s
                         GO""";
-        updateRepo(List.of(new RepoObject("diff/db2/PROCEDURE/dbo/proc1.sql", null)));
-        String expectedResponse = """
-                [DbObject[schema=dbo, name=proc1, type=PROCEDURE, definition=%s]]"""
-                .formatted(proc1NewDef);
+        updateRepo(List.of(new RepoObject("diff/test-prefix/db2/PROCEDURE/dbo/proc1.sql", null)));
+        String expectedResponse = "[DbObject[schema=dbo, name=proc1, type=PROCEDURE]]";
 
         // Dry run true
         List<SyncResult> dryRunResponse = synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db2"), true, false);
@@ -318,15 +316,14 @@ class SynchronizationTestsIT {
         // Dryrun set to true
         var actualDryRunResponse = synchronizerService.syncDbToRepo("db2", true);
 
-        var expectedResponse = "[RepoObject[path=diff/db2/PROCEDURE/dbo/proc2.sql, definition=%s]]"
-                .formatted(proc2Def);
+        var expectedResponse = "[RepoObject[path=diff/test-prefix/db2/PROCEDURE/dbo/proc2.sql]]";
         assertEquals(normalizeLineEndings(expectedResponse), normalizeLineEndings(actualDryRunResponse));
-        assertTrue(gitService.getFileContentAtRef(Constants.HEAD, "diff/db2/PROCEDURE/dbo/proc2.sql").isEmpty());
+        assertTrue(gitService.getFileContentAtRef(Constants.HEAD, "diff/test-prefix/db2/PROCEDURE/dbo/proc2.sql").isEmpty());
 
         // Dryrun set to false
         var actualResponse = synchronizerService.syncDbToRepo("db2", false);
         assertEquals(normalizeLineEndings(expectedResponse), normalizeLineEndings(actualResponse));
-        var proc2InDb2Diff = gitService.getFileContentAtRef(Constants.HEAD, "diff/db2/PROCEDURE/dbo/proc2.sql").get();
+        var proc2InDb2Diff = gitService.getFileContentAtRef(Constants.HEAD, "diff/test-prefix/db2/PROCEDURE/dbo/proc2.sql").get();
         assertEquals(normalizeLineEndings(proc2Def), normalizeLineEndings(proc2InDb2Diff));
 
         // Already synced, so no changes
