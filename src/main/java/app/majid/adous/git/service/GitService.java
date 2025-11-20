@@ -93,7 +93,7 @@ public class GitService {
                 dbObjects.add(dbObjectMapper.fromPath(e.getNewPath(), getFileContent(e.getNewId().toObjectId()).orElse(null)));
             }
             if (removedFromDiff(e, diffPath)) {
-                Optional<String> c = getFileContentAtRef(commitish, replacePathIgnoreCase(e.getOldPath(), diffPath, baseRootPath));
+                Optional<String> c = getFileContentAtRef(commitish, e.getOldPath().replace(diffPath, baseRootPath));
                 dbObjects.add(dbObjectMapper.fromPath(e.getOldPath(), c.orElse(null)));
             }
         });
@@ -145,46 +145,26 @@ public class GitService {
     }
 
     private boolean removedFromDiff(DiffEntry e, String diffPath) {
-        return RENAME_OR_DELETION.contains(e.getChangeType()) && startsWithIgnoreCase(e.getOldPath(), diffPath);
+        return RENAME_OR_DELETION.contains(e.getChangeType()) && e.getOldPath().startsWith(diffPath);
     }
 
     private boolean newOrModifiedInDiff(DiffEntry e, String diffPath) {
-        return ADDITION_OR_MODIFICATION.contains(e.getChangeType()) && startsWithIgnoreCase(e.getNewPath(), diffPath);
+        return ADDITION_OR_MODIFICATION.contains(e.getChangeType()) && e.getNewPath().startsWith(diffPath);
     }
 
     private boolean removedFromBaseAndNotExistInDiff(DiffEntry e, String commitish, String diffPath) {
-        if (RENAME_OR_DELETION.contains(e.getChangeType()) && startsWithIgnoreCase(e.getOldPath(), baseRootPath)) {
-            Optional<String> c = getFileContentAtRef(commitish, replacePathIgnoreCase(e.getNewPath(), baseRootPath, diffPath));
+        if (RENAME_OR_DELETION.contains(e.getChangeType()) && e.getOldPath().startsWith(baseRootPath)) {
+            Optional<String> c = getFileContentAtRef(commitish, e.getNewPath().replace(baseRootPath, diffPath));
             return c.isEmpty();
         }
         return false;
     }
 
     private boolean newOrModifiedInBaseAndNotExistInDiff(DiffEntry e, String commitish, String diffPath) {
-        if (ADDITION_OR_MODIFICATION.contains(e.getChangeType()) && startsWithIgnoreCase(e.getNewPath(), baseRootPath)) {
-            Optional<String> c = getFileContentAtRef(commitish, replacePathIgnoreCase(e.getNewPath(), baseRootPath, diffPath));
+        if (ADDITION_OR_MODIFICATION.contains(e.getChangeType()) && e.getNewPath().startsWith(baseRootPath)) {
+            Optional<String> c = getFileContentAtRef(commitish, e.getNewPath().replace(baseRootPath, diffPath));
             return c.isEmpty();
         }
         return false;
-    }
-
-    /**
-     * Case-insensitive check if a path starts with a given prefix.
-     */
-    private boolean startsWithIgnoreCase(String path, String prefix) {
-        if (path.length() < prefix.length()) {
-            return false;
-        }
-        return path.substring(0, prefix.length()).equalsIgnoreCase(prefix);
-    }
-
-    /**
-     * Case-insensitive path replacement.
-     */
-    private String replacePathIgnoreCase(String path, String oldPrefix, String newPrefix) {
-        if (startsWithIgnoreCase(path, oldPrefix)) {
-            return newPrefix + path.substring(oldPrefix.length());
-        }
-        return path;
     }
 }
