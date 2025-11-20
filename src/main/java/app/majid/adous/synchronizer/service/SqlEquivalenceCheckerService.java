@@ -3,6 +3,8 @@ package app.majid.adous.synchronizer.service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.Objects;
@@ -17,8 +19,14 @@ public class SqlEquivalenceCheckerService {
 
     private static final Logger logger = LoggerFactory.getLogger(SqlEquivalenceCheckerService.class);
 
+    private final SqlEquivalenceCheckerService self;
+
     @Value("${spring.application.database.default-schema}")
     private String defaultSchema;
+
+    public SqlEquivalenceCheckerService(@Lazy SqlEquivalenceCheckerService self) {
+        this.self = self;
+    }
 
     /**
      * Checks if two SQL statements are semantically equivalent.
@@ -28,8 +36,23 @@ public class SqlEquivalenceCheckerService {
      * @return true if statements are equivalent after normalization
      */
     public boolean equals(String sqlA, String sqlB) {
-        String normalizedA = normalizeSql(sqlA);
-        String normalizedB = normalizeSql(sqlB);
+        // Quick check for null and reference equality
+        // Note: == is intentional here for fast path optimization
+        //noinspection StringEquality
+        if (sqlA == sqlB) {
+            return true;
+        }
+        if (sqlA == null || sqlB == null) {
+            return false;
+        }
+
+        // Quick check for exact string equality before normalization
+        if (sqlA.equals(sqlB)) {
+            return true;
+        }
+
+        String normalizedA = self.normalizeSql(sqlA);
+        String normalizedB = self.normalizeSql(sqlB);
 
         boolean result = Objects.equals(normalizedA, normalizedB);
 
@@ -50,11 +73,9 @@ public class SqlEquivalenceCheckerService {
      * 6. Converting CREATE OR ALTER to CREATE
      * 7. Removing schema prefixes
      */
-    private String normalizeSql(String sql) {
-        if (sql == null) {
-            return null;
-        }
 
+    @Cacheable("sqlNormalizationCache")
+    public String normalizeSql(String sql) {
         String withoutComments = removeCommentsAndNormalizeBasics(sql);
         // Remove square brackets from identifiers: [ident] -> ident to make quoted/unquoted equal
         String unquotedIdentifiers = withoutComments.replaceAll("\\[(\\w+)]", "$1");

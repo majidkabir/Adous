@@ -94,13 +94,13 @@ class SynchronizationTestsIT {
                         "base/FUNCTION/dbo/prefix2_func1.sql",
                         "base/FUNCTION/dbo/prefix3_func1.sql",
                         // New: Synonyms
-                        "base/SYNONYM/dbo/syn_Table1.sql",
-                        "base/SYNONYM/dbo/syn_RemoteTable.sql",
-                        "base/SYNONYM/dbo/prefix1_syn_Table.sql",
+                        "base/SYNONYM/dbo/syn_table1.sql",
+                        "base/SYNONYM/dbo/syn_remotetable.sql",
+                        "base/SYNONYM/dbo/prefix1_syn_table.sql",
                         // New: Table Types
-                        "base/TABLE_TYPE/dbo/tt_UserList.sql",
-                        "base/TABLE_TYPE/dbo/tt_OrderDetails.sql",
-                        "base/TABLE_TYPE/dbo/prefix1_tt_List.sql"
+                        "base/TABLE_TYPE/dbo/tt_userlist.sql",
+                        "base/TABLE_TYPE/dbo/tt_orderdetails.sql",
+                        "base/TABLE_TYPE/dbo/prefix1_tt_list.sql"
                 ).map(this::assertFileExists).toArray(Executable[]::new)
         );
 
@@ -143,11 +143,11 @@ class SynchronizationTestsIT {
                                 GO
                                 CREATE FUNCTION func1() RETURNS INT BEGIN RETURN 1 END
                                 GO"""),
-                        Pair.of("base/SYNONYM/dbo/syn_Table1.sql", """
-                                CREATE SYNONYM [dbo].[syn_Table1] FOR [dbo].[table1];
+                        Pair.of("base/SYNONYM/dbo/syn_table1.sql", """
+                                CREATE SYNONYM [dbo].[syn_table1] FOR [dbo].[table1];
                                 GO"""),
-                        Pair.of("base/TABLE_TYPE/dbo/tt_UserList.sql", """
-                                CREATE TYPE [dbo].[tt_UserList] AS TABLE
+                        Pair.of("base/TABLE_TYPE/dbo/tt_userlist.sql", """
+                                CREATE TYPE [dbo].[tt_userlist] AS TABLE
                                 (
                                     [UserId] int NOT NULL,
                                     [UserName] nvarchar(100) NOT NULL
@@ -176,10 +176,10 @@ class SynchronizationTestsIT {
                         "diff/test-prefix/db2/VIEW/dbo/prefix3_view2.sql",
                         "diff/test-prefix/db2/TRIGGER/dbo/prefix2_trigger1.sql",
                         "diff/test-prefix/db2/FUNCTION/dbo/prefix4_func2.sql",
-                        "diff/test-prefix/db2/SYNONYM/dbo/syn_Table1.sql",
-                        "diff/test-prefix/db2/SYNONYM/dbo/syn_RemoteTable.sql",
-                        "diff/test-prefix/db2/TABLE_TYPE/dbo/tt_UserList.sql",
-                        "diff/test-prefix/db2/TABLE_TYPE/dbo/tt_OrderDetails.sql"
+                        "diff/test-prefix/db2/SYNONYM/dbo/syn_table1.sql",
+                        "diff/test-prefix/db2/SYNONYM/dbo/syn_remotetable.sql",
+                        "diff/test-prefix/db2/TABLE_TYPE/dbo/tt_userlist.sql",
+                        "diff/test-prefix/db2/TABLE_TYPE/dbo/tt_orderdetails.sql"
                 ).map(this::assertFileNotExists).toArray(Executable[]::new)
         );
 

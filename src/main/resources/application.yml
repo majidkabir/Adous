@@ -5,13 +5,14 @@ spring:
       default-schema: dbo
     authentication:
       token: test-token
-  security:
-    basic:
-      enabled: false
+  cache:
+    type: simple
+    cache-names:
+      - sqlNormalizationCache
   datasources:
     dbs:
 #       database2:
-#         url: jdbc:sqlserver://localhost;databaseName=GBRWMS;encrypt=false
+#         url: jdbc:sqlserver://localhost;databaseName=dbname;encrypt=false
 #         username: sa
 #         password: P@ssw0rd
 #         driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver

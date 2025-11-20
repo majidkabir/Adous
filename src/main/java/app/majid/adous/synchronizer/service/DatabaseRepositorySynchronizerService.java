@@ -18,7 +18,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -324,34 +323,48 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
     }
 
     private List<RepoObject> computeDbDiffForCommit(String commitish, String dbName) throws IOException {
-        var diffs = new ArrayList<RepoObject>();
-
         var allObjects = getAllObjectsForDb(commitish, dbName);
 
-        allObjects.values()
+        // Process in parallel and collect directly, avoiding synchronized ArrayList
+        return allObjects.values()
                 .parallelStream()
-                .forEach(o -> {
-                    if (sqlEquivalenceCheckerService.equals(o.getDbDefinition(), o.getBaseDefinition())) {
-                        if (o.getDiffDefinition() != null) {
-                            diffs.add(new RepoObject(o.getDiffPath(), null));
-                        }
-                    } else if (o.getDbDefinition() == null) {
-                        if (!"".equals(o.getDiffDefinition())) {
-                            diffs.add(new RepoObject(o.getDiffPath(), ""));
-                        }
-                    } else if (!sqlEquivalenceCheckerService.equals(o.getDbDefinition(), o.getDiffDefinition())) {
-                        diffs.add(new RepoObject(o.getDiffPath(), o.getDbDefinition()));
-                    }
-                });
-
-        return diffs.stream()
+                .map(this::computeDiffForObject)
+                .filter(Objects::nonNull)
                 .filter(o -> !ignoreService.shouldIgnore(o.path()))
                 .toList();
     }
 
-    private Map<String, FullObject> getAllObjectsForDb(String commitish, String dbName) throws IOException {
-        var all = new ConcurrentHashMap<String, FullObject>();
+    /**
+     * Computes the diff for a single object. Returns null if no diff needed.
+     */
+    private RepoObject computeDiffForObject(FullObject o) {
+        // Case 1: DB definition matches base definition
+        if (sqlEquivalenceCheckerService.equals(o.getDbDefinition(), o.getBaseDefinition())) {
+            // Remove diff file if it exists
+            if (o.getDiffDefinition() != null) {
+                return new RepoObject(o.getDiffPath(), null);
+            }
+            return null;
+        }
 
+        // Case 2: DB object was deleted
+        if (o.getDbDefinition() == null) {
+            // Add empty diff file if it doesn't exist or isn't empty
+            if (!"".equals(o.getDiffDefinition())) {
+                return new RepoObject(o.getDiffPath(), "");
+            }
+            return null;
+        }
+
+        // Case 3: DB definition differs from both base and diff
+        if (!sqlEquivalenceCheckerService.equals(o.getDbDefinition(), o.getDiffDefinition())) {
+            return new RepoObject(o.getDiffPath(), o.getDbDefinition());
+        }
+
+        return null;
+    }
+
+    private Map<String, FullObject> getAllObjectsForDb(String commitish, String dbName) throws IOException {
         var baseRootPath = gitService.getBasePath();
         var diffRootPath = gitService.getDiffPath() + "/" + dbName;
 
@@ -359,28 +372,35 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
         var baseObjects = gitService.getAllFilesAtRef(commitish, baseRootPath);
         var diffObjectsForDb = gitService.getAllFilesAtRef(commitish, diffRootPath);
 
+        // Pre-size the map to reduce resizing overhead
+        int estimatedSize = Math.max(dbObjects.size(), Math.max(baseObjects.size(), diffObjectsForDb.size()));
+        var all = new ConcurrentHashMap<String, FullObject>(estimatedSize);
+
+        // Process DB objects - this creates the initial entries
         dbObjects
                 .parallelStream()
                 .forEach(dbObject -> {
                     var key = dbObject.type() + "/" + dbObject.schema() + "/" + dbObject.name();
                     var o = initFullObjectFromKey(key, dbName);
                     o.setDbDefinition(dbObject.definition());
-                    all.put(o.getKey(), o);
+                    all.put(key, o);
                 });
 
+        // Process base objects - merge with existing entries
         baseObjects.entrySet()
                 .parallelStream()
                 .forEach(e -> {
                     var key = getKeyFromGitPath(e.getKey());
-                    var o = all.computeIfAbsent(key, k -> initFullObjectFromKey(key, dbName));
+                    var o = all.computeIfAbsent(key, k -> initFullObjectFromKey(k, dbName));
                     o.setBaseDefinition(e.getValue());
                 });
 
+        // Process diff objects - merge with existing entries
         diffObjectsForDb.entrySet()
                 .parallelStream()
                 .forEach(e -> {
                     var key = getKeyFromGitPath(e.getKey());
-                    var o = all.computeIfAbsent(key, k -> initFullObjectFromKey(key, dbName));
+                    var o = all.computeIfAbsent(key, k -> initFullObjectFromKey(k, dbName));
                     o.setDiffDefinition(e.getValue());
                 });
 
