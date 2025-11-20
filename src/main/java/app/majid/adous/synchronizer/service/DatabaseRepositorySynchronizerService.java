@@ -67,6 +67,7 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
      */
     @UseDatabase("dbName")
     public String initRepo(String dbName) throws IOException, GitAPIException {
+        dbName = dbName.toLowerCase();
         logger.info("Initializing repository with database: {}", dbName);
 
         if (!gitService.isEmptyRepo()) {
@@ -106,6 +107,7 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
      */
     @UseDatabase("dbName")
     public String syncDbToRepo(String dbName, boolean dryRun) throws IOException, GitAPIException {
+        dbName = dbName.toLowerCase();
         logger.info("Syncing database '{}' to repository (dryRun: {})", dbName, dryRun);
 
         // Ensure local repo is up to date
@@ -183,6 +185,7 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
      */
     private SyncResult syncDatabaseWithExceptionHandling(String commitish, String dbName,
                                                          boolean dryRun, boolean force) {
+        dbName = dbName.toLowerCase();
         try {
             String result = syncRepoToDb(commitish, dbName, dryRun, force);
             SyncResult.Status status = dryRun ? SyncResult.Status.SUCCESS_DRY_RUN : SyncResult.Status.SYNCED;

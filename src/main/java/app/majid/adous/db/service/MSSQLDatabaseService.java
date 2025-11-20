@@ -36,11 +36,6 @@ public class MSSQLDatabaseService implements DatabaseService {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    /**
-     * Retrieves all database objects (procedures, functions, views, triggers, synonyms, table types) from the database.
-     *
-     * @return List of database objects with their definitions
-     */
     @Override
     public List<DbObject> getDbObjects() {
         logger.debug("Fetching database objects from SQL Server");
@@ -48,8 +43,8 @@ public class MSSQLDatabaseService implements DatabaseService {
         // Get objects from sys.sql_modules (procedures, functions, views, triggers)
         List<DbObject> objects = jdbcTemplate.query(buildGetObjectsQuery(), (rs, rowNum) ->
                 new DbObject(
-                        rs.getString("schema_name"),
-                        rs.getString("name"),
+                        rs.getString("schema_name").toLowerCase(),
+                        rs.getString("name").toLowerCase(),
                         DbObjectType.valueOf(rs.getString("object_type")),
                         rs.getString("definition")
                 )
@@ -63,6 +58,22 @@ public class MSSQLDatabaseService implements DatabaseService {
 
         logger.debug("Retrieved {} database objects", objects.size());
         return objects;
+    }
+
+    @Transactional
+    @Override
+    public void applyChangesToDatabase(List<DbObject> dbChanges) {
+        if (dbChanges == null || dbChanges.isEmpty()) {
+            logger.debug("No database changes to apply");
+            return;
+        }
+
+        logger.info("Applying {} database changes", dbChanges.size());
+
+        createRequiredSchemas(dbChanges);
+        applyObjectChanges(dbChanges);
+
+        logger.info("Successfully applied database changes");
     }
 
     /**
@@ -117,8 +128,8 @@ public class MSSQLDatabaseService implements DatabaseService {
                 """;
 
         List<DbObject> synonyms = jdbcTemplate.query(synonymQuery, (rs, rowNum) -> {
-            String schemaName = rs.getString("schema_name");
-            String name = rs.getString("name");
+            String schemaName = rs.getString("schema_name").toLowerCase();
+            String name = rs.getString("name").toLowerCase();
             String targetObject = rs.getString("target_object");
 
             String definition = String.format(
@@ -152,8 +163,8 @@ public class MSSQLDatabaseService implements DatabaseService {
                 """;
 
         List<DbObject> tableTypes = jdbcTemplate.query(tableTypeQuery, (rs, rowNum) -> {
-            String schemaName = rs.getString("schema_name");
-            String name = rs.getString("name");
+            String schemaName = rs.getString("schema_name").toLowerCase();
+            String name = rs.getString("name").toLowerCase();
             int objectId = rs.getInt("object_id");
 
             String definition = buildTableTypeDefinition(schemaName, name, objectId);
@@ -254,29 +265,6 @@ public class MSSQLDatabaseService implements DatabaseService {
                     scale > 0 ? dataType + "(" + scale + ")" : dataType;
             default -> dataType;
         };
-    }
-
-    /**
-     * Applies database changes transactionally.
-     * Creates necessary schemas, drops existing objects, and creates new/updated objects.
-     *
-     * @param dbChanges List of database objects to apply
-     * @throws org.springframework.dao.DataAccessException if database operation fails
-     */
-    @Transactional
-    @Override
-    public void applyChangesToDatabase(List<DbObject> dbChanges) {
-        if (dbChanges == null || dbChanges.isEmpty()) {
-            logger.debug("No database changes to apply");
-            return;
-        }
-
-        logger.info("Applying {} database changes", dbChanges.size());
-
-        createRequiredSchemas(dbChanges);
-        applyObjectChanges(dbChanges);
-
-        logger.info("Successfully applied database changes");
     }
 
     /**
