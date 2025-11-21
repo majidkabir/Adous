@@ -1,6 +1,6 @@
 package app.majid.adous.synchronizer.security.config;
 
-import app.majid.adous.synchronizer.security.filter.DummyAuthenticationFilter;
+import app.majid.adous.synchronizer.security.filter.AuthenticationFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -16,10 +16,10 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 @Configuration
 public class SecurityConfig {
 
-    private final DummyAuthenticationFilter tokenAuthenticationFilter;
+    private final AuthenticationFilter authenticationFilter;
 
-    public SecurityConfig(DummyAuthenticationFilter tokenAuthenticationFilter) {
-        this.tokenAuthenticationFilter = tokenAuthenticationFilter;
+    public SecurityConfig(AuthenticationFilter authenticationFilter) {
+        this.authenticationFilter = authenticationFilter;
     }
 
     /**
@@ -42,7 +42,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/**", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         .anyRequest().authenticated())
-                .addFilterBefore(tokenAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(authenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
     }
 }

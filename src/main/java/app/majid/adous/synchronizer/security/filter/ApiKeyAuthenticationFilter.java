@@ -4,7 +4,10 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -15,11 +18,20 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.List;
 
+/**
+ * API Key authentication filter.
+ * Validates requests using an API key provided in the X-API-Key header.
+ * Active when authentication type is set to 'APIKEY'.
+ */
 @Component
-public class DummyAuthenticationFilter extends OncePerRequestFilter {
+@ConditionalOnProperty(name = "spring.application.authentication.type", havingValue = "APIKEY")
+public class ApiKeyAuthenticationFilter extends OncePerRequestFilter implements AuthenticationFilter {
 
-    @Value("${spring.application.authentication.token}")
-    private String validToken;
+    private static final Logger logger = LoggerFactory.getLogger(ApiKeyAuthenticationFilter.class);
+    private static final String API_KEY_HEADER = "X-API-Key";
+
+    @Value("${spring.application.authentication.api-key}")
+    private String validApiKey;
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -32,17 +44,30 @@ public class DummyAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
-        String token = request.getHeader("Authorization");
 
-        if (token == null || !token.equals(validToken)) {
+        String apiKey = request.getHeader(API_KEY_HEADER);
+
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            logger.warn("Missing API key in request from {}", request.getRemoteAddr());
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            response.getWriter().write("Invalid or missing token");
+            response.setContentType("application/json");
+            response.getWriter().write("{\"error\": \"Missing API key. Please provide X-API-Key header.\"}");
             return;
         }
 
+        if (!apiKey.equals(validApiKey)) {
+            logger.warn("Invalid API key attempt from {}", request.getRemoteAddr());
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.setContentType("application/json");
+            response.getWriter().write("{\"error\": \"Invalid API key.\"}");
+            return;
+        }
+
+        logger.debug("Valid API key authenticated for request to {}", request.getRequestURI());
+
         UsernamePasswordAuthenticationToken authenticationToken =
-                new UsernamePasswordAuthenticationToken("admin", null,
-                        List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+                new UsernamePasswordAuthenticationToken("api-user", null,
+                        List.of(new SimpleGrantedAuthority("ROLE_USER")));
         authenticationToken.setDetails(
                 new WebAuthenticationDetailsSource().buildDetails(request));
 
@@ -53,6 +78,6 @@ public class DummyAuthenticationFilter extends OncePerRequestFilter {
         } finally {
             SecurityContextHolder.clearContext();
         }
-
     }
 }
+
