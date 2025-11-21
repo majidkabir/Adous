@@ -1,7 +1,8 @@
 spring:
   application:
     authentication:
-      token: dummy-token-for-test
+      type: APIKEY
+      api-key: test-api-key
     database:
       default-schema: dbo
 

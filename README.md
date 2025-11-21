@@ -10,8 +10,11 @@
 - 🔍 **SQL Equivalence Checking**: Smart comparison of SQL statements
 - 🚀 **Parallel Processing**: Efficient synchronization using virtual threads
 - 📝 **OpenAPI Documentation**: Integrated Swagger UI for API exploration
-- 🔒 **Security**: Token-based authentication
+- 🔒 **Security**: Configurable authentication (API Key)
 - 🎯 **Dry Run Mode**: Preview changes before applying them
+- 📊 **Monitoring**: Built-in metrics and health checks with Prometheus support
+- 🚫 **Sync Ignore Patterns**: Exclude specific database objects using .syncignore file
+- 🐳 **Docker Support**: Production-ready Docker image with multi-stage build
 
 ## Architecture
 
@@ -25,11 +28,13 @@
 
 ### Key Technologies
 
-- **Spring Boot 3.5.6**: Modern Spring Boot framework
+- **Spring Boot 3.5.7**: Modern Spring Boot framework
 - **Java 25**: Latest Java features including virtual threads
-- **JGit**: Git operations in Java
+- **JGit 7.3.0**: Git operations in Java
 - **SQL Server**: Primary database support
-- **SpringDoc OpenAPI**: API documentation
+- **SpringDoc OpenAPI 2.7.0**: API documentation and Swagger UI
+- **Micrometer**: Metrics and monitoring with Prometheus support
+- **Testcontainers**: Integration testing with real database instances
 
 ## Getting Started
 
@@ -46,6 +51,11 @@ Configure your databases and Git repository in `application.yml`:
 
 ```yaml
 spring:
+  application:
+    name: Adous
+    authentication:
+      type: APIKEY  # Authentication type: APIKEY
+      api-key: your-api-key  # For APIKEY authentication
   datasources:
     dbs:
       myDatabase:
@@ -54,12 +64,49 @@ spring:
         password: yourPassword
         driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
 
+# Git repository configuration
 github:
-  remote-uri: https://github.com/your-org/your-repo.git
-  token: your-github-token
+  remote-uri: https://github.com/your-org/your-repo.git  # Can be set via GIT_REMOTE_URI env var
+  token: your-github-token  # Can be set via GIT_TOKEN env var
   base-root-path: base
   diff-root-path: diff
+  prefix-path: ""  # Optional prefix for Git paths (GIT_PREFIX_PATH)
+  commit-username: "Adous System"  # Git commit author (GIT_COMMIT_USERNAME)
+  commit-email: "adous@mail.com"  # Git commit email (GIT_COMMIT_EMAIL)
+  default-branch: main  # Default branch name (GIT_DEFAULT_BRANCH)
+  sync-ignore-file: ""  # Path to custom .syncignore file (GIT_SYNC_IGNORE_FILE)
+
+# Actuator endpoints for monitoring
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
 ```
+
+#### Sync Ignore Configuration
+
+Create a `.syncignore` file in `src/main/resources/` to exclude specific database objects from synchronization:
+
+```
+# Ignore all stored procedures starting with 'temp_'
+**/PROCEDURE/*/temp_*.sql
+
+# Ignore specific view
+**/VIEW/dbo/internal_view.sql
+
+# Ignore all objects in a specific schema
+**/FUNCTION/internal/*
+```
+
+### Authentication
+
+1. **APIKEY**: API Key authentication
+   ```bash
+   export AUTH_TYPE=APIKEY
+   export API_KEY=your-api-key
+   ```
+   Use in `X-API-Key` header: `X-API-Key: your-api-key`
 
 ### Building
 
@@ -74,6 +121,35 @@ github:
 ```
 
 The application will start on `http://localhost:8080`
+
+### Running with Docker
+
+Build the Docker image:
+
+```bash
+docker build -t adous:latest .
+```
+
+Run the container:
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -e GIT_REMOTE_URI=https://github.com/your-org/your-repo.git \
+  -e GIT_TOKEN=your-github-token \
+  -e GIT_PREFIX_PATH="" \
+  -e GIT_COMMIT_USERNAME="Adous System" \
+  -e GIT_COMMIT_EMAIL="adous@mail.com" \
+  -e GIT_DEFAULT_BRANCH=main \
+  --name adous \
+  adous:latest
+```
+
+The Docker image includes:
+- Multi-stage build for minimal image size
+- Non-root user for security
+- Health checks via actuator endpoint
+- Optimized JVM settings for container environments
 
 ### API Documentation
 
@@ -124,7 +200,7 @@ curl -X POST http://localhost:8080/api/synchronizer/init-repo/myDatabase
 {
   "dbName": "myDatabase",
   "dryRun": false,
-  "result": "Repository initialized with 25 objects",
+  "result": "[list of all objects added]",
   "message": "Repository initialized successfully"
 }
 ```
@@ -195,10 +271,11 @@ base/
       {objectName}.sql
 
 diff/
-  {databaseName}/
-    {objectType}/
-      {schema}/
-        {objectName}.sql
+  {prefix-path}/
+    {databaseName}/
+      {objectType}/
+        {schema}/
+          {objectName}.sql
 ```
 
 - **base/**: Contains the canonical version of database objects
@@ -212,6 +289,29 @@ diff/
 ### Tagging Strategy
 
 Each database is tagged in Git when synchronized, allowing tracking of which commit each database is synced to.
+
+## Monitoring and Health Checks
+
+Adous includes built-in monitoring capabilities via Spring Boot Actuator:
+
+### Available Endpoints
+
+- **Health**: `http://localhost:8080/actuator/health` - Application health status
+- **Info**: `http://localhost:8080/actuator/info` - Application information
+- **Metrics**: `http://localhost:8080/actuator/metrics` - Application metrics
+- **Prometheus**: `http://localhost:8080/actuator/prometheus` - Prometheus-compatible metrics
+
+### Metrics
+
+The application exports metrics including:
+- HTTP request/response metrics
+- JVM memory and GC metrics
+- Database connection pool metrics
+- Custom synchronization operation metrics
+
+### Docker Health Check
+
+When running in Docker, the container includes a health check that polls the actuator health endpoint every 30 seconds.
 
 ## Best Practices
 
@@ -230,6 +330,20 @@ Run tests with:
 ```
 
 Integration tests use Testcontainers for SQL Server.
+
+## CI/CD
+
+The project includes GitHub Actions workflow for continuous integration:
+
+### Build and Test Workflow
+
+Located in `.github/workflows/build-test.yaml`, this workflow:
+- Runs on pull requests and pushes to main branch
+- Sets up Java 25 with Temurin distribution
+- Builds the application with Gradle
+- Executes all tests including integration tests
+
+The workflow ensures code quality and test coverage on every change.
 
 ## Contributing
 

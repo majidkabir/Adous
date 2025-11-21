@@ -4,7 +4,10 @@ spring:
     database:
       default-schema: dbo
     authentication:
-      token: test-token
+      # Authentication type: APIKEY
+      type: ${AUTH_TYPE:APIKEY}
+      # API Key for APIKEY authentication (X-API-Key header)
+      api-key: ${API_KEY:test-api-key}
   cache:
     type: simple
     cache-names:
