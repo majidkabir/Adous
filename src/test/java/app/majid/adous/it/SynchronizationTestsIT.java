@@ -106,7 +106,11 @@ class SynchronizationTestsIT {
                         "base/SEQUENCE/dbo/prefix1_seq_temp.sql",
                         // New: Scalar types
                         "base/SCALAR_TYPE/dbo/phonenumber.sql",
-                        "base/SCALAR_TYPE/dbo/countrycode.sql"
+                        "base/SCALAR_TYPE/dbo/countrycode.sql",
+                        // New: Tables
+                        "base/TABLE/dbo/table1.sql",
+                        "base/TABLE/dbo/users.sql",
+                        "base/TABLE/dbo/orders.sql"
                 ).map(this::assertFileExists).toArray(Executable[]::new)
         );
 
@@ -205,7 +209,10 @@ class SynchronizationTestsIT {
                         "diff/test-prefix/db2/FUNCTION/dbo/func1.sql",
                         // New diffs: sequence and scalar type with differences
                         "diff/test-prefix/db2/SEQUENCE/dbo/seq_orderid.sql",
-                        "diff/test-prefix/db2/SCALAR_TYPE/dbo/phonenumber.sql"
+                        "diff/test-prefix/db2/SCALAR_TYPE/dbo/phonenumber.sql",
+                        // New diffs: tables with differences
+                        "diff/test-prefix/db2/TABLE/dbo/users.sql",
+                        "diff/test-prefix/db2/TABLE/dbo/orders.sql"
                 ).map(this::assertFileExists).toArray(Executable[]::new)
         );
 
@@ -222,7 +229,9 @@ class SynchronizationTestsIT {
                         // Sequences identical should not appear
                         "diff/test-prefix/db2/SEQUENCE/dbo/prefix1_seq_temp.sql",
                         // Scalar types identical should not appear
-                        "diff/test-prefix/db2/SCALAR_TYPE/dbo/countrycode.sql"
+                        "diff/test-prefix/db2/SCALAR_TYPE/dbo/countrycode.sql",
+                        // Tables identical should not appear
+                        "diff/test-prefix/db2/TABLE/dbo/table1.sql"
                 ).map(this::assertFileNotExists).toArray(Executable[]::new)
         );
 

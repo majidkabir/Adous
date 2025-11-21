@@ -2,7 +2,33 @@ CREATE DATABASE dbtest1;
 
 USE dbtest1;
 
+-- Base test table
 CREATE TABLE table1 (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+
+-- Test tables for TABLE sync testing
+CREATE TABLE users (
+    id INT IDENTITY(1,1) NOT NULL,
+    username NVARCHAR(100) NOT NULL,
+    email NVARCHAR(255) NOT NULL,
+    created_at DATETIME DEFAULT GETDATE(),
+    CONSTRAINT PK_users PRIMARY KEY (id),
+    CONSTRAINT UQ_users_username UNIQUE (username),
+    CONSTRAINT UQ_users_email UNIQUE (email)
+);
+
+CREATE TABLE orders (
+    id INT IDENTITY(1,1) NOT NULL,
+    user_id INT NOT NULL,
+    order_date DATETIME NOT NULL DEFAULT GETDATE(),
+    total_amount DECIMAL(10,2) NOT NULL,
+    status NVARCHAR(50) NOT NULL,
+    CONSTRAINT PK_orders PRIMARY KEY (id),
+    CONSTRAINT FK_orders_users FOREIGN KEY (user_id) REFERENCES users(id),
+    CONSTRAINT CHK_orders_amount CHECK (total_amount >= 0)
+);
+
+CREATE INDEX IX_orders_user_id ON orders(user_id);
+CREATE INDEX IX_orders_status ON orders(status);
 
 CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 1 executed' AS Message; END;
 CREATE PROCEDURE proc2 AS BEGIN SELECT 'Procedure 2 executed' AS Message; END;
@@ -52,7 +78,34 @@ CREATE DATABASE dbtest2;
 
 USE dbtest2;
 
+-- Base test table
 CREATE TABLE table1 (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+
+-- Test tables for TABLE sync testing (with schema differences from dbtest1)
+CREATE TABLE users (
+    id INT IDENTITY(1,1) NOT NULL,
+    username NVARCHAR(100) NOT NULL,
+    email NVARCHAR(255) NOT NULL,
+    created_at DATETIME DEFAULT GETDATE(),
+    is_active BIT NOT NULL DEFAULT 1,  -- Extra column in dbtest2
+    CONSTRAINT PK_users PRIMARY KEY (id),
+    CONSTRAINT UQ_users_username UNIQUE (username),
+    CONSTRAINT UQ_users_email UNIQUE (email)
+);
+
+CREATE TABLE orders (
+    id INT IDENTITY(1,1) NOT NULL,
+    user_id INT NOT NULL,
+    order_date DATETIME NOT NULL DEFAULT GETDATE(),
+    total_amount DECIMAL(12,2) NOT NULL,  -- Different precision in dbtest2
+    status NVARCHAR(50) NOT NULL,
+    -- Missing FK constraint in dbtest2
+    CONSTRAINT PK_orders PRIMARY KEY (id),
+    CONSTRAINT CHK_orders_amount CHECK (total_amount >= 0)
+);
+
+CREATE INDEX IX_orders_user_id ON orders(user_id);
+CREATE INDEX IX_orders_status ON orders(status);
 
 CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 11 executed' AS Message; END;
 CREATE PROCEDURE proc2 AS BEGIN SELECT 'Procedure 2 executed' AS Message; END;

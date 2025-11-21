@@ -15,6 +15,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -31,9 +33,11 @@ public class MSSQLDatabaseService implements DatabaseService {
     private String defaultSchema;
 
     private final JdbcTemplate jdbcTemplate;
+    private final TableAlterScriptGenerator tableAlterScriptGenerator;
 
-    public MSSQLDatabaseService(JdbcTemplate jdbcTemplate) {
+    public MSSQLDatabaseService(JdbcTemplate jdbcTemplate, TableAlterScriptGenerator tableAlterScriptGenerator) {
         this.jdbcTemplate = jdbcTemplate;
+        this.tableAlterScriptGenerator = tableAlterScriptGenerator;
     }
 
     @Override
@@ -61,6 +65,9 @@ public class MSSQLDatabaseService implements DatabaseService {
 
         // Get scalar types
         objects.addAll(getScalarTypes());
+
+        // Get tables
+        objects.addAll(getTables());
 
         logger.debug("Retrieved {} database objects", objects.size());
         return objects;
@@ -369,6 +376,314 @@ public class MSSQLDatabaseService implements DatabaseService {
     }
 
     /**
+     * Retrieves all user-defined tables from the database.
+     *
+     * @return List of table database objects
+     */
+    private List<DbObject> getTables() {
+        logger.debug("Fetching tables from SQL Server");
+
+        String tableQuery = """
+                SELECT
+                    SCHEMA_NAME(t.schema_id) AS schema_name,
+                    t.name AS table_name,
+                    t.object_id
+                FROM sys.tables t
+                WHERE t.is_ms_shipped = 0
+                    AND t.type = 'U'
+                ORDER BY schema_name, table_name
+                """;
+
+        List<DbObject> tables = jdbcTemplate.query(tableQuery, (rs, rowNum) -> {
+            String schemaName = rs.getString("schema_name").toLowerCase();
+            String tableName = rs.getString("table_name").toLowerCase();
+            int objectId = rs.getInt("object_id");
+
+            String definition = buildCreateTableDefinition(schemaName, tableName, objectId);
+
+            return new DbObject(schemaName, tableName, DbObjectType.TABLE, definition);
+        });
+
+        logger.debug("Retrieved {} tables", tables.size());
+        return tables;
+    }
+
+    /**
+     * Builds the CREATE TABLE definition for a table by retrieving its structure.
+     *
+     * @param schemaName The schema name
+     * @param tableName The table name
+     * @param objectId The object ID of the table
+     * @return Complete CREATE TABLE statement
+     */
+    private String buildCreateTableDefinition(String schemaName, String tableName, int objectId) {
+        StringBuilder definition = new StringBuilder();
+        definition.append("CREATE TABLE [").append(schemaName).append("].[").append(tableName).append("]\n(\n");
+
+        // Get columns
+        List<String> columnDefinitions = getTableColumns(objectId);
+        definition.append("    ").append(String.join(",\n    ", columnDefinitions));
+
+        // Get constraints (PK, FK, UNIQUE, CHECK)
+        List<String> constraints = getTableConstraints(schemaName, tableName, objectId);
+        if (!constraints.isEmpty()) {
+            definition.append(",\n    ").append(String.join(",\n    ", constraints));
+        }
+
+        definition.append("\n);\nGO\n");
+
+        // Get indexes (non-constraint indexes)
+        List<String> indexes = getTableIndexes(schemaName, tableName, objectId);
+        for (String index : indexes) {
+            definition.append("\n").append(index).append("\nGO");
+        }
+
+        return definition.toString();
+    }
+
+    /**
+     * Gets column definitions for a table.
+     */
+    private List<String> getTableColumns(int objectId) {
+        String columnQuery = """
+                SELECT
+                    c.column_id,
+                    c.name AS column_name,
+                    TYPE_NAME(c.user_type_id) AS data_type,
+                    c.max_length,
+                    c.precision,
+                    c.scale,
+                    c.is_nullable,
+                    c.is_identity,
+                    ISNULL(ic.seed_value, 0) AS identity_seed,
+                    ISNULL(ic.increment_value, 0) AS identity_increment,
+                    dc.definition AS default_value
+                FROM sys.columns c
+                LEFT JOIN sys.identity_columns ic ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                LEFT JOIN sys.default_constraints dc ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
+                WHERE c.object_id = ?
+                ORDER BY c.column_id
+                """;
+
+        return jdbcTemplate.query(columnQuery, (rs, rowNum) -> {
+            String columnName = rs.getString("column_name");
+            String dataType = rs.getString("data_type");
+            int maxLength = rs.getInt("max_length");
+            int precision = rs.getInt("precision");
+            int scale = rs.getInt("scale");
+            boolean isNullable = rs.getBoolean("is_nullable");
+            boolean isIdentity = rs.getBoolean("is_identity");
+            int identitySeed = rs.getInt("identity_seed");
+            int identityIncrement = rs.getInt("identity_increment");
+            String defaultValue = rs.getString("default_value");
+
+            StringBuilder columnDef = new StringBuilder();
+            columnDef.append("[").append(columnName).append("] ");
+            columnDef.append(formatDataType(dataType, maxLength, precision, scale));
+
+            if (isIdentity) {
+                columnDef.append(" IDENTITY(").append(identitySeed).append(",")
+                        .append(identityIncrement).append(")");
+            }
+
+            if (!isNullable) {
+                columnDef.append(" NOT NULL");
+            } else {
+                columnDef.append(" NULL");
+            }
+
+            if (defaultValue != null && !isIdentity) {
+                columnDef.append(" DEFAULT ").append(defaultValue);
+            }
+
+            return columnDef.toString();
+        }, objectId);
+    }
+
+    /**
+     * Gets constraint definitions for a table (PK, FK, UNIQUE, CHECK).
+     */
+    private List<String> getTableConstraints(String schemaName, String tableName, int objectId) {
+        List<String> constraints = new ArrayList<>();
+
+        // Primary Key
+        String pkQuery = """
+                SELECT
+                    kc.name AS constraint_name,
+                    STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
+                FROM sys.key_constraints kc
+                JOIN sys.index_columns ic ON kc.parent_object_id = ic.object_id 
+                    AND kc.unique_index_id = ic.index_id
+                JOIN sys.columns c ON ic.object_id = c.object_id 
+                    AND ic.column_id = c.column_id
+                WHERE kc.parent_object_id = ? AND kc.type = 'PK'
+                GROUP BY kc.name
+                """;
+
+        jdbcTemplate.query(pkQuery, rs -> {
+            String constraintName = rs.getString("constraint_name");
+            String columns = rs.getString("columns");
+            String[] columnArray = columns.split(", ");
+            String formattedColumns = Arrays.stream(columnArray)
+                    .map(col -> "[" + col + "]")
+                    .reduce((a, b) -> a + ", " + b)
+                    .orElse("");
+
+            // Normalize auto-generated constraint names (PK__tablename__*)
+            String normalizedName = constraintName;
+            if (constraintName.startsWith("PK__")) {
+                normalizedName = "PK_" + tableName;
+            }
+
+            constraints.add(String.format("CONSTRAINT [%s] PRIMARY KEY (%s)",
+                    normalizedName, formattedColumns));
+        }, objectId);
+
+        // Unique Constraints
+        String uniqueQuery = """
+                SELECT
+                    kc.name AS constraint_name,
+                    STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
+                FROM sys.key_constraints kc
+                JOIN sys.index_columns ic ON kc.parent_object_id = ic.object_id 
+                    AND kc.unique_index_id = ic.index_id
+                JOIN sys.columns c ON ic.object_id = c.object_id 
+                    AND ic.column_id = c.column_id
+                WHERE kc.parent_object_id = ? AND kc.type = 'UQ'
+                GROUP BY kc.name
+                """;
+
+        jdbcTemplate.query(uniqueQuery, rs -> {
+            String constraintName = rs.getString("constraint_name");
+            String columns = rs.getString("columns");
+            String[] columnArray = columns.split(", ");
+            String formattedColumns = Arrays.stream(columnArray)
+                    .map(col -> "[" + col + "]")
+                    .reduce((a, b) -> a + ", " + b)
+                    .orElse("");
+
+            // Normalize auto-generated constraint names (UQ__tablename__*)
+            String normalizedName = constraintName;
+            if (constraintName.startsWith("UQ__")) {
+                String columnsForName = String.join("_", columnArray);
+                normalizedName = "UQ_" + tableName + "_" + columnsForName;
+            }
+
+            constraints.add(String.format("CONSTRAINT [%s] UNIQUE (%s)",
+                    normalizedName, formattedColumns));
+        }, objectId);
+
+        // Foreign Keys
+        String fkQuery = """
+                SELECT
+                    fk.name AS constraint_name,
+                    STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) AS columns,
+                    SCHEMA_NAME(ref_t.schema_id) AS ref_schema,
+                    ref_t.name AS ref_table,
+                    STRING_AGG(ref_c.name, ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) AS ref_columns
+                FROM sys.foreign_keys fk
+                JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+                JOIN sys.columns c ON fkc.parent_object_id = c.object_id AND fkc.parent_column_id = c.column_id
+                JOIN sys.tables ref_t ON fk.referenced_object_id = ref_t.object_id
+                JOIN sys.columns ref_c ON fkc.referenced_object_id = ref_c.object_id AND fkc.referenced_column_id = ref_c.column_id
+                WHERE fk.parent_object_id = ?
+                GROUP BY fk.name, ref_t.schema_id, ref_t.name
+                """;
+
+        jdbcTemplate.query(fkQuery, rs -> {
+            String constraintName = rs.getString("constraint_name");
+            String columns = rs.getString("columns");
+            String refSchema = rs.getString("ref_schema");
+            String refTable = rs.getString("ref_table");
+            String refColumns = rs.getString("ref_columns");
+
+            String[] columnArray = columns.split(", ");
+            String formattedColumns = Arrays.stream(columnArray)
+                    .map(col -> "[" + col + "]")
+                    .reduce((a, b) -> a + ", " + b)
+                    .orElse("");
+
+            String[] refColumnArray = refColumns.split(", ");
+            String formattedRefColumns = Arrays.stream(refColumnArray)
+                    .map(col -> "[" + col + "]")
+                    .reduce((a, b) -> a + ", " + b)
+                    .orElse("");
+
+            // Normalize auto-generated constraint names (FK__tablename__*)
+            String normalizedName = constraintName;
+            if (constraintName.startsWith("FK__")) {
+                normalizedName = "FK_" + tableName + "_" + refTable;
+            }
+
+            constraints.add(String.format("CONSTRAINT [%s] FOREIGN KEY (%s) REFERENCES [%s].[%s] (%s)",
+                    normalizedName, formattedColumns, refSchema, refTable, formattedRefColumns));
+        }, objectId);
+
+        // Check Constraints
+        String checkQuery = """
+                SELECT
+                    cc.name AS constraint_name,
+                    cc.definition
+                FROM sys.check_constraints cc
+                WHERE cc.parent_object_id = ?
+                """;
+
+        jdbcTemplate.query(checkQuery, rs -> {
+            String constraintName = rs.getString("constraint_name");
+            String definition = rs.getString("definition");
+
+            // Normalize auto-generated constraint names (CK__tablename__*)
+            String normalizedName = constraintName;
+            if (constraintName.startsWith("CK__")) {
+                // Use a simple hash of the definition to make the name deterministic
+                int hash = Math.abs(definition.hashCode() % 10000);
+                normalizedName = "CK_" + tableName + "_" + hash;
+            }
+
+            constraints.add(String.format("CONSTRAINT [%s] CHECK %s",
+                    normalizedName, definition));
+        }, objectId);
+
+        return constraints;
+    }
+
+    /**
+     * Gets index definitions for a table (non-constraint indexes).
+     */
+    private List<String> getTableIndexes(String schemaName, String tableName, int objectId) {
+        String indexQuery = """
+                SELECT
+                    i.name AS index_name,
+                    i.is_unique,
+                    STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
+                FROM sys.indexes i
+                JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE i.object_id = ?
+                    AND i.is_primary_key = 0
+                    AND i.is_unique_constraint = 0
+                    AND i.type > 0
+                GROUP BY i.name, i.is_unique
+                """;
+
+        return jdbcTemplate.query(indexQuery, (rs, rowNum) -> {
+            String indexName = rs.getString("index_name");
+            boolean isUnique = rs.getBoolean("is_unique");
+            String columns = rs.getString("columns");
+
+            String[] columnArray = columns.split(", ");
+            String formattedColumns = Arrays.stream(columnArray)
+                    .map(col -> "[" + col + "]")
+                    .reduce((a, b) -> a + ", " + b)
+                    .orElse("");
+
+            String uniqueKeyword = isUnique ? "UNIQUE " : "";
+            return String.format("CREATE %sINDEX [%s] ON [%s].[%s] (%s);",
+                    uniqueKeyword, indexName, schemaName, tableName, formattedColumns);
+        }, objectId);
+    }
+
+    /**
      * Formats a data type with its length, precision, and scale.
      *
      * @param dataType The base data type
@@ -424,7 +739,9 @@ public class MSSQLDatabaseService implements DatabaseService {
     }
 
     /**
-     * Applies the actual object changes (drop and recreate).
+     * Applies the actual object changes.
+     * For TABLEs: generates ALTER statements to preserve data
+     * For other objects: uses DROP and CREATE pattern
      */
     private void applyObjectChanges(List<DbObject> dbChanges) {
         ResourceDatabasePopulator populator = new ResourceDatabasePopulator();
@@ -434,10 +751,24 @@ public class MSSQLDatabaseService implements DatabaseService {
             logger.debug("Processing change for {}.{} ({})",
                     change.schema(), change.name(), change.type());
 
-            populator.addScript(toResource(buildDropQuery(change)));
+            if (change.type() == DbObjectType.TABLE) {
+                // For tables, use ALTER script generator to preserve data
+                if (change.definition() != null) {
+                    String alterScript = tableAlterScriptGenerator.generateAlterScript(change);
+                    if (!alterScript.isEmpty()) {
+                        populator.addScript(toResource(alterScript));
+                    }
+                } else {
+                    // Table deletion - drop the table
+                    populator.addScript(toResource(buildDropQuery(change)));
+                }
+            } else {
+                // For non-table objects, use traditional DROP/CREATE pattern
+                populator.addScript(toResource(buildDropQuery(change)));
 
-            if (change.definition() != null) {
-                populator.addScript(toResource(change.definition()));
+                if (change.definition() != null) {
+                    populator.addScript(toResource(change.definition()));
+                }
             }
         });
 
@@ -451,9 +782,11 @@ public class MSSQLDatabaseService implements DatabaseService {
     private String buildDropQuery(DbObject obj) {
         // TABLE_TYPE and SCALAR_TYPE need "DROP TYPE" syntax
         // SEQUENCE needs "DROP SEQUENCE" syntax
+        // TABLE needs "DROP TABLE" syntax
         String dropKeyword = switch (obj.type()) {
             case TABLE_TYPE, SCALAR_TYPE -> "TYPE";
             case SEQUENCE -> "SEQUENCE";
+            case TABLE -> "TABLE";
             default -> obj.type().toString();
         };
 
