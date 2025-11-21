@@ -9,7 +9,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,7 +17,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * Microsoft SQL Server implementation of DatabaseService.
@@ -53,6 +51,9 @@ public class MSSQLDatabaseService implements DatabaseService {
                         rs.getString("definition")
                 )
         );
+
+        // Get Full-Text catalogs (must be retrieved before tables/indexes that use them)
+        objects.addAll(getFullTextCatalogs());
 
         // Get synonyms
         objects.addAll(getSynonyms());
@@ -649,27 +650,42 @@ public class MSSQLDatabaseService implements DatabaseService {
 
     /**
      * Gets index definitions for a table (non-constraint indexes).
+     * Includes all index types: Clustered (1), Non-Clustered (2), XML (3), Spatial (4), Clustered Columnstore (5), etc.
+     * Validates and filters out only indexes with invalid column types that cannot be used as key columns.
      */
     private List<String> getTableIndexes(String schemaName, String tableName, int objectId) {
         String indexQuery = """
                 SELECT
                     i.name AS index_name,
+                    i.index_id,
                     i.is_unique,
+                    i.type AS index_type,
                     STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
                 FROM sys.indexes i
-                JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-                JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                LEFT JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id AND ic.is_included_column = 0
+                LEFT JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
                 WHERE i.object_id = ?
                     AND i.is_primary_key = 0
                     AND i.is_unique_constraint = 0
                     AND i.type > 0
-                GROUP BY i.name, i.is_unique
+                GROUP BY i.name, i.index_id, i.is_unique, i.type
                 """;
 
-        return jdbcTemplate.query(indexQuery, (rs, rowNum) -> {
+        List<String> indexes = new ArrayList<>();
+
+        jdbcTemplate.query(indexQuery, rs -> {
             String indexName = rs.getString("index_name");
+            int indexId = rs.getInt("index_id");
             boolean isUnique = rs.getBoolean("is_unique");
+            int indexType = rs.getInt("index_type");
             String columns = rs.getString("columns");
+
+            // Validate that all key columns have valid data types for indexing
+            if (hasInvalidIndexColumns(objectId, indexId)) {
+                logger.warn("Skipping index [{}] on [{}].[{}] - contains columns with types invalid for index keys (VARCHAR(MAX), NVARCHAR(MAX), TEXT, etc.)",
+                        indexName, schemaName, tableName);
+                return;
+            }
 
             String[] columnArray = columns.split(", ");
             String formattedColumns = Arrays.stream(columnArray)
@@ -678,9 +694,34 @@ public class MSSQLDatabaseService implements DatabaseService {
                     .orElse("");
 
             String uniqueKeyword = isUnique ? "UNIQUE " : "";
-            return String.format("CREATE %sINDEX [%s] ON [%s].[%s] (%s);",
-                    uniqueKeyword, indexName, schemaName, tableName, formattedColumns);
+            indexes.add(String.format("CREATE %sINDEX [%s] ON [%s].[%s] (%s);",
+                    uniqueKeyword, indexName, schemaName, tableName, formattedColumns));
         }, objectId);
+
+        return indexes;
+    }
+
+    /**
+     * Checks if an index has any key columns with data types invalid for use in indexes.
+     * Invalid types include: TEXT, NTEXT, IMAGE, VARCHAR(MAX), NVARCHAR(MAX), VARBINARY(MAX), XML
+     */
+    private boolean hasInvalidIndexColumns(int objectId, int indexId) {
+        String validationQuery = """
+                SELECT COUNT(*) as invalid_count
+                FROM sys.index_columns ic
+                JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                JOIN sys.types t ON c.user_type_id = t.user_type_id
+                WHERE ic.object_id = ?
+                    AND ic.index_id = ?
+                    AND ic.is_included_column = 0
+                    AND (
+                        t.name IN ('text', 'ntext', 'image', 'xml')
+                        OR (t.name IN ('varchar', 'nvarchar', 'varbinary') AND c.max_length = -1)
+                    )
+                """;
+
+        Integer invalidCount = jdbcTemplate.queryForObject(validationQuery, Integer.class, objectId, indexId);
+        return invalidCount != null && invalidCount > 0;
     }
 
     /**
@@ -742,38 +783,325 @@ public class MSSQLDatabaseService implements DatabaseService {
      * Applies the actual object changes.
      * For TABLEs: generates ALTER statements to preserve data
      * For other objects: uses DROP and CREATE pattern
+     *
+     * Objects are processed in dependency order to ensure referenced objects exist:
+     * 1. Tables (base objects)
+     * 2. Scalar Types and Table Types
+     * 3. Sequences
+     * 4. Synonyms
+     * 5. Functions and Procedures (depend on tables)
+     * 6. Views (depend on tables and functions)
+     * 7. Triggers (depend on tables)
      */
     private void applyObjectChanges(List<DbObject> dbChanges) {
-        ResourceDatabasePopulator populator = new ResourceDatabasePopulator();
-        populator.setSeparator("GO");
+        // Order changes by dependency to avoid "object does not exist" errors
+        List<DbObject> orderedChanges = orderByDependency(dbChanges);
 
-        dbChanges.forEach(change -> {
+        orderedChanges.forEach(change -> {
             logger.debug("Processing change for {}.{} ({})",
                     change.schema(), change.name(), change.type());
 
+            String sql;
             if (change.type() == DbObjectType.TABLE) {
                 // For tables, use ALTER script generator to preserve data
                 if (change.definition() != null) {
-                    String alterScript = tableAlterScriptGenerator.generateAlterScript(change);
-                    if (!alterScript.isEmpty()) {
-                        populator.addScript(toResource(alterScript));
+                    sql = tableAlterScriptGenerator.generateAlterScript(change);
+                    if (!sql.isEmpty()) {
+                        executeWithGoBatchSeparator(sql);
                     }
                 } else {
                     // Table deletion - drop the table
-                    populator.addScript(toResource(buildDropQuery(change)));
+                    sql = buildDropQuery(change);
+                    executeWithGoBatchSeparator(sql);
                 }
             } else {
                 // For non-table objects, use traditional DROP/CREATE pattern
-                populator.addScript(toResource(buildDropQuery(change)));
+                StringBuilder sqlBuilder = new StringBuilder();
+                sqlBuilder.append(buildDropQuery(change));
 
                 if (change.definition() != null) {
-                    populator.addScript(toResource(change.definition()));
+                    sqlBuilder.append(change.definition());
                 }
+
+                executeWithGoBatchSeparator(sqlBuilder.toString());
             }
         });
+    }
 
-        populator.execute(Objects.requireNonNull(jdbcTemplate.getDataSource(),
-                "DataSource must not be null"));
+    /**
+     * Orders database objects by dependency to ensure objects are created before they are referenced.
+     *
+     * Dependency order:
+     * 1. Tables without foreign keys (base tables)
+     * 2. Tables with foreign keys (ordered by their dependencies)
+     * 3. Scalar Types, Table Types - can be used in table columns
+     * 4. Sequences - standalone objects
+     * 5. Synonyms - aliases to other objects
+     * 6. Functions, Procedures - depend on tables
+     * 7. Views - depend on tables and functions
+     * 8. Triggers - depend on tables
+     */
+    private List<DbObject> orderByDependency(List<DbObject> dbChanges) {
+        List<DbObject> orderedList = new ArrayList<>();
+
+        // Separate tables from other objects
+        List<DbObject> tables = dbChanges.stream()
+                .filter(obj -> obj.type() == DbObjectType.TABLE)
+                .toList();
+
+        List<DbObject> nonTables = dbChanges.stream()
+                .filter(obj -> obj.type() != DbObjectType.TABLE)
+                .sorted((a, b) -> {
+                    int priorityA = getDependencyPriority(a.type());
+                    int priorityB = getDependencyPriority(b.type());
+                    return Integer.compare(priorityA, priorityB);
+                })
+                .toList();
+
+        // Order tables by foreign key dependencies
+        List<DbObject> orderedTables = orderTablesByForeignKeys(tables);
+
+        // Combine: tables first, then other objects
+        orderedList.addAll(orderedTables);
+        orderedList.addAll(nonTables);
+
+        return orderedList;
+    }
+
+    /**
+     * Orders tables by foreign key dependencies using topological sort.
+     * Tables without foreign keys come first, then tables that reference them.
+     */
+    private List<DbObject> orderTablesByForeignKeys(List<DbObject> tables) {
+        // Build dependency map: table -> list of tables it depends on (via FK)
+        java.util.Map<String, List<String>> dependencies = new java.util.HashMap<>();
+        java.util.Map<String, DbObject> tableMap = new java.util.HashMap<>();
+
+        for (DbObject table : tables) {
+            String tableKey = table.schema() + "." + table.name();
+            tableMap.put(tableKey, table);
+            dependencies.put(tableKey, extractForeignKeyDependencies(table));
+        }
+
+        // Topological sort
+        List<DbObject> ordered = new ArrayList<>();
+        java.util.Set<String> visited = new java.util.HashSet<>();
+        java.util.Set<String> visiting = new java.util.HashSet<>();
+
+        for (String tableKey : tableMap.keySet()) {
+            if (!visited.contains(tableKey)) {
+                topologicalSort(tableKey, dependencies, tableMap, visited, visiting, ordered);
+            }
+        }
+
+        return ordered;
+    }
+
+    /**
+     * Extracts foreign key dependencies from a table definition.
+     * Returns list of referenced tables in format "schema.table".
+     */
+    private List<String> extractForeignKeyDependencies(DbObject table) {
+        if (table.definition() == null) {
+            return List.of();
+        }
+
+        List<String> dependencies = new ArrayList<>();
+        String definition = table.definition().toUpperCase();
+
+        // Match: FOREIGN KEY (...) REFERENCES [schema].[table] or [table]
+        // Pattern: REFERENCES followed by schema.table or just table
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+            "REFERENCES\\s+(?:\\[(\\w+)\\]\\.)?\\[(\\w+)\\]",
+            java.util.regex.Pattern.CASE_INSENSITIVE
+        );
+
+        java.util.regex.Matcher matcher = pattern.matcher(definition);
+        while (matcher.find()) {
+            String schema = matcher.group(1);
+            String tableName = matcher.group(2);
+
+            // If schema not specified, assume dbo
+            if (schema == null) {
+                schema = "dbo";
+            }
+
+            String referencedTable = schema.toLowerCase() + "." + tableName.toLowerCase();
+            dependencies.add(referencedTable);
+        }
+
+        return dependencies;
+    }
+
+    /**
+     * Performs topological sort to order tables by dependencies.
+     * Uses DFS with cycle detection.
+     */
+    private void topologicalSort(
+            String tableKey,
+            java.util.Map<String, List<String>> dependencies,
+            java.util.Map<String, DbObject> tableMap,
+            java.util.Set<String> visited,
+            java.util.Set<String> visiting,
+            List<DbObject> ordered) {
+
+        if (visited.contains(tableKey)) {
+            return;
+        }
+
+        if (visiting.contains(tableKey)) {
+            // Circular dependency detected - log warning and continue
+            logger.warn("Circular foreign key dependency detected involving table: {}", tableKey);
+            return;
+        }
+
+        visiting.add(tableKey);
+
+        // Visit dependencies first (referenced tables)
+        List<String> deps = dependencies.get(tableKey);
+        if (deps != null) {
+            for (String dep : deps) {
+                // Only process if the referenced table is in our change set
+                if (tableMap.containsKey(dep)) {
+                    topologicalSort(dep, dependencies, tableMap, visited, visiting, ordered);
+                }
+            }
+        }
+
+        visiting.remove(tableKey);
+        visited.add(tableKey);
+
+        // Add this table to the ordered list
+        DbObject table = tableMap.get(tableKey);
+        if (table != null) {
+            ordered.add(table);
+        }
+    }
+
+    /**
+     * Returns the dependency priority for a database object type.
+     * Lower numbers are processed first.
+     */
+    private int getDependencyPriority(DbObjectType type) {
+        return switch (type) {
+            case FULLTEXT_CATALOG -> 0;   // Full-Text catalogs must be created before tables/indexes
+            case TABLE -> 1;              // Tables first (handled separately with FK ordering)
+            case SCALAR_TYPE -> 2;        // Types before functions that might use them
+            case TABLE_TYPE -> 2;         // Types before functions that might use them
+            case SEQUENCE -> 3;           // Sequences are standalone
+            case SYNONYM -> 4;            // Synonyms reference other objects
+            case FUNCTION -> 5;           // Functions depend on tables
+            case PROCEDURE -> 5;          // Procedures depend on tables
+            case VIEW -> 6;               // Views depend on tables and functions
+            case TRIGGER -> 7;            // Triggers depend on tables
+        };
+    }
+
+    /**
+     * Executes SQL script by splitting on GO batch separators.
+     * This is necessary because SQL Server requires GO statements to be executed in separate batches,
+     * but Spring's ResourceDatabasePopulator doesn't handle GO as a proper batch separator.
+     */
+    private void executeWithGoBatchSeparator(String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return;
+        }
+
+        // Parse SQL line by line to find GO batch separators
+        // GO must be on its own line (with only whitespace) to be treated as a batch separator
+        List<String> batches = new ArrayList<>();
+        StringBuilder currentBatch = new StringBuilder();
+
+        String[] lines = sql.split("\\r?\\n");
+        for (String line : lines) {
+            String trimmedLine = line.trim();
+
+            // Check if this line is a GO statement (case-insensitive, standalone)
+            if (trimmedLine.equalsIgnoreCase("GO")) {
+                // Save current batch if not empty
+                String batch = currentBatch.toString().trim();
+                if (!batch.isEmpty()) {
+                    batches.add(batch);
+                }
+                currentBatch = new StringBuilder();
+            } else {
+                // Add line to current batch
+                currentBatch.append(line).append("\n");
+            }
+        }
+
+        // Don't forget the last batch
+        String lastBatch = currentBatch.toString().trim();
+        if (!lastBatch.isEmpty()) {
+            batches.add(lastBatch);
+        }
+
+        // Execute each batch separately using direct JDBC execution
+        // This avoids Spring's ResourceDatabasePopulator which tries to parse statements
+        // on semicolons, breaking function/procedure bodies that contain semicolons
+        for (String batch : batches) {
+            logger.debug("Executing SQL batch ({} chars): {}",
+                batch.length(),
+                batch.substring(0, Math.min(100, batch.length())).replace("\n", " ") + "...");
+
+            try {
+                // Execute the batch directly using JdbcTemplate
+                // This sends the entire batch to SQL Server as-is, without parsing
+                jdbcTemplate.execute(batch);
+
+                logger.debug("Successfully executed SQL batch");
+            } catch (Exception e) {
+                logger.error("Failed to execute SQL batch ({} chars): {}",
+                    batch.length(),
+                    batch.length() <= 500 ? batch : batch.substring(0, 500) + "...");
+                throw new RuntimeException("Failed to execute SQL batch: " + e.getMessage(), e);
+            }
+        }
+    }
+
+
+    /**
+     * Retrieves Full-Text catalogs from the database.
+     * Full-Text catalogs must be created before Full-Text indexes.
+     */
+    private List<DbObject> getFullTextCatalogs() {
+        String catalogQuery = """
+                SELECT 
+                    name,
+                    is_default,
+                    is_accent_sensitivity_on
+                FROM sys.fulltext_catalogs
+                WHERE name NOT IN ('', 'default')
+                ORDER BY name
+                """;
+
+        return jdbcTemplate.query(catalogQuery, (rs, rowNum) -> {
+            String name = rs.getString("name");
+            boolean isDefault = rs.getBoolean("is_default");
+            boolean isAccentSensitive = rs.getBoolean("is_accent_sensitivity_on");
+
+            StringBuilder definition = new StringBuilder();
+            definition.append("CREATE FULLTEXT CATALOG [").append(name).append("]");
+
+            if (isAccentSensitive) {
+                definition.append(" WITH ACCENT_SENSITIVITY = ON");
+            } else {
+                definition.append(" WITH ACCENT_SENSITIVITY = OFF");
+            }
+
+            if (isDefault) {
+                definition.append(" AS DEFAULT");
+            }
+
+            definition.append(";");
+
+            return new DbObject(
+                    "dbo",  // Full-Text catalogs are database-level objects
+                    name.toLowerCase(),
+                    DbObjectType.FULLTEXT_CATALOG,
+                    definition.toString()
+            );
+        });
     }
 
     /**
@@ -783,10 +1111,12 @@ public class MSSQLDatabaseService implements DatabaseService {
         // TABLE_TYPE and SCALAR_TYPE need "DROP TYPE" syntax
         // SEQUENCE needs "DROP SEQUENCE" syntax
         // TABLE needs "DROP TABLE" syntax
+        // FULLTEXT_CATALOG needs "DROP FULLTEXT CATALOG" syntax
         String dropKeyword = switch (obj.type()) {
             case TABLE_TYPE, SCALAR_TYPE -> "TYPE";
             case SEQUENCE -> "SEQUENCE";
             case TABLE -> "TABLE";
+            case FULLTEXT_CATALOG -> "FULLTEXT CATALOG";
             default -> obj.type().toString();
         };
 

@@ -9,5 +9,6 @@ public enum DbObjectType {
     TABLE_TYPE,
     SEQUENCE,
     SCALAR_TYPE,
-    TABLE
+    TABLE,
+    FULLTEXT_CATALOG
 }
