@@ -100,7 +100,13 @@ class SynchronizationTestsIT {
                         // New: Table Types
                         "base/TABLE_TYPE/dbo/tt_userlist.sql",
                         "base/TABLE_TYPE/dbo/tt_orderdetails.sql",
-                        "base/TABLE_TYPE/dbo/prefix1_tt_list.sql"
+                        "base/TABLE_TYPE/dbo/prefix1_tt_list.sql",
+                        // New: Sequences
+                        "base/SEQUENCE/dbo/seq_orderid.sql",
+                        "base/SEQUENCE/dbo/prefix1_seq_temp.sql",
+                        // New: Scalar types
+                        "base/SCALAR_TYPE/dbo/phonenumber.sql",
+                        "base/SCALAR_TYPE/dbo/countrycode.sql"
                 ).map(this::assertFileExists).toArray(Executable[]::new)
         );
 
@@ -152,6 +158,36 @@ class SynchronizationTestsIT {
                                     [UserId] int NOT NULL,
                                     [UserName] nvarchar(100) NOT NULL
                                 );
+                                GO"""),
+                        // New sequence definition
+                        Pair.of("base/SEQUENCE/dbo/seq_orderid.sql", """
+                                CREATE SEQUENCE [dbo].[seq_orderid]
+                                    AS int
+                                    START WITH 1
+                                    INCREMENT BY 1
+                                    MINVALUE 1
+                                    MAXVALUE 1000
+                                    NO CYCLE
+                                    NO CACHE;
+                                GO"""),
+                        Pair.of("base/SEQUENCE/dbo/prefix1_seq_temp.sql", """
+                                CREATE SEQUENCE [dbo].[prefix1_seq_temp]
+                                    AS bigint
+                                    START WITH 100
+                                    INCREMENT BY 10
+                                    MINVALUE 0
+                                    MAXVALUE 100000
+                                    NO CYCLE
+                                    CACHE 20;
+                                GO"""),
+                        // New scalar types
+                        Pair.of("base/SCALAR_TYPE/dbo/phonenumber.sql", """
+                                CREATE TYPE [dbo].[phonenumber]
+                                    FROM varchar(20) NOT NULL;
+                                GO"""),
+                        Pair.of("base/SCALAR_TYPE/dbo/countrycode.sql", """
+                                CREATE TYPE [dbo].[countrycode]
+                                    FROM char(2) NOT NULL;
                                 GO""")
                 ).map(this::assertFileContent).toArray(Executable[]::new)
         );
@@ -166,7 +202,10 @@ class SynchronizationTestsIT {
                         "diff/test-prefix/db2/PROCEDURE/dbo/prefix4_proc1.sql",
                         "diff/test-prefix/db2/TRIGGER/dbo/trigger1.sql",
                         "diff/test-prefix/db2/VIEW/dbo/view1.sql",
-                        "diff/test-prefix/db2/FUNCTION/dbo/func1.sql"
+                        "diff/test-prefix/db2/FUNCTION/dbo/func1.sql",
+                        // New diffs: sequence and scalar type with differences
+                        "diff/test-prefix/db2/SEQUENCE/dbo/seq_orderid.sql",
+                        "diff/test-prefix/db2/SCALAR_TYPE/dbo/phonenumber.sql"
                 ).map(this::assertFileExists).toArray(Executable[]::new)
         );
 
@@ -179,7 +218,11 @@ class SynchronizationTestsIT {
                         "diff/test-prefix/db2/SYNONYM/dbo/syn_table1.sql",
                         "diff/test-prefix/db2/SYNONYM/dbo/syn_remotetable.sql",
                         "diff/test-prefix/db2/TABLE_TYPE/dbo/tt_userlist.sql",
-                        "diff/test-prefix/db2/TABLE_TYPE/dbo/tt_orderdetails.sql"
+                        "diff/test-prefix/db2/TABLE_TYPE/dbo/tt_orderdetails.sql",
+                        // Sequences identical should not appear
+                        "diff/test-prefix/db2/SEQUENCE/dbo/prefix1_seq_temp.sql",
+                        // Scalar types identical should not appear
+                        "diff/test-prefix/db2/SCALAR_TYPE/dbo/countrycode.sql"
                 ).map(this::assertFileNotExists).toArray(Executable[]::new)
         );
 
@@ -213,6 +256,22 @@ class SynchronizationTestsIT {
                                 SET QUOTED_IDENTIFIER ON;
                                 GO
                                 CREATE FUNCTION func1() RETURNS INT BEGIN RETURN 11 END
+                                GO"""),
+                        // Sequence diff
+                        Pair.of("diff/test-prefix/db2/SEQUENCE/dbo/seq_orderid.sql", """
+                                CREATE SEQUENCE [dbo].[seq_orderid]
+                                    AS int
+                                    START WITH 1
+                                    INCREMENT BY 2
+                                    MINVALUE 1
+                                    MAXVALUE 1000
+                                    NO CYCLE
+                                    NO CACHE;
+                                GO"""),
+                        // Scalar type diff
+                        Pair.of("diff/test-prefix/db2/SCALAR_TYPE/dbo/phonenumber.sql", """
+                                CREATE TYPE [dbo].[phonenumber]
+                                    FROM varchar(25) NOT NULL;
                                 GO""")
                 ).map(this::assertFileContent).toArray(Executable[]::new)
         );

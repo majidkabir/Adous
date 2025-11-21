@@ -40,6 +40,14 @@ CREATE SYNONYM syn_Table1 FOR dbo.table1;
 CREATE SYNONYM syn_RemoteTable FOR [RemoteServer].[RemoteDB].[dbo].[RemoteTable];
 CREATE SYNONYM prefix1_syn_Table FOR dbo.table1;
 
+-- New sequences (seq_orderid differs between db1 and db2; prefix1_seq_temp identical)
+CREATE SEQUENCE Seq_OrderId AS INT START WITH 1 INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 NO CYCLE NO CACHE;
+CREATE SEQUENCE Prefix1_Seq_Temp AS BIGINT START WITH 100 INCREMENT BY 10 MINVALUE 0 MAXVALUE 100000 NO CYCLE CACHE 20;
+
+-- New scalar types (phonenumber differs length, countrycode identical)
+CREATE TYPE PhoneNumber FROM VARCHAR(20) NOT NULL;
+CREATE TYPE CountryCode FROM CHAR(2) NOT NULL;
+
 CREATE DATABASE dbtest2;
 
 USE dbtest2;
@@ -81,3 +89,10 @@ CREATE SYNONYM syn_Table1 FOR dbo.table1;
 CREATE SYNONYM syn_RemoteTable FOR [RemoteServer].[RemoteDB].[dbo].[RemoteTable];
 CREATE SYNONYM prefix1_syn_Table FOR dbo.table1;
 
+-- Sequences (difference in INCREMENT BY only for seq_orderid)
+CREATE SEQUENCE Seq_OrderId AS INT START WITH 1 INCREMENT BY 2 MINVALUE 1 MAXVALUE 1000 NO CYCLE NO CACHE;
+CREATE SEQUENCE Prefix1_Seq_Temp AS BIGINT START WITH 100 INCREMENT BY 10 MINVALUE 0 MAXVALUE 100000 NO CYCLE CACHE 20;
+
+-- Scalar types (difference in varchar length only for phonenumber)
+CREATE TYPE PhoneNumber FROM VARCHAR(25) NOT NULL;
+CREATE TYPE CountryCode FROM CHAR(2) NOT NULL;

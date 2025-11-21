@@ -6,5 +6,7 @@ public enum DbObjectType {
     PROCEDURE,
     TRIGGER,
     SYNONYM,
-    TABLE_TYPE
+    TABLE_TYPE,
+    SEQUENCE,
+    SCALAR_TYPE
 }

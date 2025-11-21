@@ -56,6 +56,12 @@ public class MSSQLDatabaseService implements DatabaseService {
         // Get table types
         objects.addAll(getTableTypes());
 
+        // Get sequences
+        objects.addAll(getSequences());
+
+        // Get scalar types
+        objects.addAll(getScalarTypes());
+
         logger.debug("Retrieved {} database objects", objects.size());
         return objects;
     }
@@ -241,6 +247,128 @@ public class MSSQLDatabaseService implements DatabaseService {
     }
 
     /**
+     * Retrieves all sequences from the database.
+     *
+     * @return List of sequence database objects
+     */
+    private List<DbObject> getSequences() {
+        logger.debug("Fetching sequences from SQL Server");
+
+        String sequenceQuery = """
+                SELECT
+                    SCHEMA_NAME(schema_id) AS schema_name,
+                    name AS name,
+                    CAST(start_value AS BIGINT) AS start_value,
+                    CAST(increment AS BIGINT) AS increment,
+                    CAST(minimum_value AS BIGINT) AS minimum_value,
+                    CAST(maximum_value AS BIGINT) AS maximum_value,
+                    is_cycling,
+                    is_cached,
+                    CAST(cache_size AS INT) AS cache_size,
+                    TYPE_NAME(system_type_id) AS data_type
+                FROM sys.sequences
+                WHERE is_ms_shipped = 0
+                ORDER BY schema_name, name
+                """;
+
+        List<DbObject> sequences = jdbcTemplate.query(sequenceQuery, (rs, rowNum) -> {
+            String schemaName = rs.getString("schema_name").toLowerCase();
+            String name = rs.getString("name").toLowerCase();
+            long startValue = rs.getLong("start_value");
+            long increment = rs.getLong("increment");
+            long minimumValue = rs.getLong("minimum_value");
+            long maximumValue = rs.getLong("maximum_value");
+            boolean isCycling = rs.getBoolean("is_cycling");
+            boolean isCached = rs.getBoolean("is_cached");
+            int cacheSize = rs.getInt("cache_size");
+            String dataType = rs.getString("data_type");
+
+            StringBuilder definition = new StringBuilder();
+            definition.append("CREATE SEQUENCE [").append(schemaName).append("].[").append(name).append("]\n");
+            definition.append("    AS ").append(dataType).append("\n");
+            definition.append("    START WITH ").append(startValue).append("\n");
+            definition.append("    INCREMENT BY ").append(increment).append("\n");
+            definition.append("    MINVALUE ").append(minimumValue).append("\n");
+            definition.append("    MAXVALUE ").append(maximumValue).append("\n");
+
+            if (isCycling) {
+                definition.append("    CYCLE\n");
+            } else {
+                definition.append("    NO CYCLE\n");
+            }
+
+            if (isCached && cacheSize > 0) {
+                definition.append("    CACHE ").append(cacheSize);
+            } else {
+                definition.append("    NO CACHE");
+            }
+
+            definition.append(";\nGO");
+
+            return new DbObject(schemaName, name, DbObjectType.SEQUENCE, definition.toString());
+        });
+
+        logger.debug("Retrieved {} sequences", sequences.size());
+        return sequences;
+    }
+
+    /**
+     * Retrieves all user-defined scalar types from the database.
+     *
+     * @return List of scalar type database objects
+     */
+    private List<DbObject> getScalarTypes() {
+        logger.debug("Fetching scalar types from SQL Server");
+
+        String scalarTypeQuery = """
+                SELECT
+                    SCHEMA_NAME(t.schema_id) AS schema_name,
+                    t.name AS name,
+                    TYPE_NAME(t.system_type_id) AS base_type,
+                    t.max_length,
+                    t.precision,
+                    t.scale,
+                    t.is_nullable,
+                    dc.definition AS default_value,
+                    r.name AS rule_name
+                FROM sys.types t
+                LEFT JOIN sys.default_constraints dc ON t.default_object_id = dc.object_id
+                LEFT JOIN sys.objects r ON t.rule_object_id = r.object_id
+                WHERE t.is_user_defined = 1
+                    AND t.is_table_type = 0
+                    AND t.is_assembly_type = 0
+                ORDER BY schema_name, name
+                """;
+
+        List<DbObject> scalarTypes = jdbcTemplate.query(scalarTypeQuery, (rs, rowNum) -> {
+            String schemaName = rs.getString("schema_name").toLowerCase();
+            String name = rs.getString("name").toLowerCase();
+            String baseType = rs.getString("base_type");
+            int maxLength = rs.getInt("max_length");
+            int precision = rs.getInt("precision");
+            int scale = rs.getInt("scale");
+            boolean isNullable = rs.getBoolean("is_nullable");
+            String defaultValue = rs.getString("default_value");
+            String ruleName = rs.getString("rule_name");
+
+            StringBuilder definition = new StringBuilder();
+            definition.append("CREATE TYPE [").append(schemaName).append("].[").append(name).append("]\n");
+            definition.append("    FROM ").append(formatDataType(baseType, maxLength, precision, scale));
+
+            if (!isNullable) {
+                definition.append(" NOT NULL");
+            }
+
+            definition.append(";\nGO");
+
+            return new DbObject(schemaName, name, DbObjectType.SCALAR_TYPE, definition.toString());
+        });
+
+        logger.debug("Retrieved {} scalar types", scalarTypes.size());
+        return scalarTypes;
+    }
+
+    /**
      * Formats a data type with its length, precision, and scale.
      *
      * @param dataType The base data type
@@ -321,8 +449,13 @@ public class MSSQLDatabaseService implements DatabaseService {
      * Builds a DROP statement for a database object.
      */
     private String buildDropQuery(DbObject obj) {
-        // TABLE_TYPE needs "DROP TYPE" syntax
-        String dropKeyword = obj.type() == DbObjectType.TABLE_TYPE ? "TYPE" : obj.type().toString();
+        // TABLE_TYPE and SCALAR_TYPE need "DROP TYPE" syntax
+        // SEQUENCE needs "DROP SEQUENCE" syntax
+        String dropKeyword = switch (obj.type()) {
+            case TABLE_TYPE, SCALAR_TYPE -> "TYPE";
+            case SEQUENCE -> "SEQUENCE";
+            default -> obj.type().toString();
+        };
 
         return """
             DROP %s IF EXISTS [%s].[%s];
