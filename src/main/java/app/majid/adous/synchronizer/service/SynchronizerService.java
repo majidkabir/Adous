@@ -1,7 +1,5 @@
 package app.majid.adous.synchronizer.service;
 
-import app.majid.adous.synchronizer.exception.DbNotOnboardedException;
-import app.majid.adous.synchronizer.exception.DbOutOfSyncException;
 import app.majid.adous.synchronizer.model.SyncResult;
 import org.eclipse.jgit.api.errors.GitAPIException;
 

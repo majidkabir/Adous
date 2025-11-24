@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.zip.CRC32;
 
 /**
  * Microsoft SQL Server implementation of DatabaseService.
@@ -637,7 +638,7 @@ public class MSSQLDatabaseService implements DatabaseService {
             String normalizedName = constraintName;
             if (constraintName.startsWith("CK__")) {
                 // Use a simple hash of the definition to make the name deterministic
-                int hash = Math.abs(definition.hashCode() % 10000);
+                String hash = fastDeterministicHash(definition);
                 normalizedName = "CK_" + tableName + "_" + hash;
             }
 
@@ -829,6 +830,152 @@ public class MSSQLDatabaseService implements DatabaseService {
     }
 
     /**
+     * Extracts view dependencies by parsing SQL definitions.
+     * This is used during repo-to-db sync where we only have view definitions, not database metadata.
+     *
+     * @param views List of view objects
+     * @return Map of view name to set of views it depends on
+     */
+    private java.util.Map<String, java.util.Set<String>> extractViewDependenciesFromSQL(List<DbObject> views) {
+        java.util.Map<String, java.util.Set<String>> dependencies = new java.util.HashMap<>();
+
+        // Create a map of view names (including schema) for quick lookup
+        java.util.Map<String, DbObject> viewMap = new java.util.HashMap<>();
+        for (DbObject v : views) {
+            viewMap.put(v.schema().toLowerCase() + "." + v.name().toLowerCase(), v);
+            viewMap.put(v.name().toLowerCase(), v); // Also map by name only
+        }
+
+        for (DbObject view : views) {
+            if (view.definition() == null) {
+                continue;
+            }
+
+            String sql = view.definition().toLowerCase();
+            java.util.Set<String> deps = new java.util.HashSet<>();
+
+            // Look for other views referenced in this view's SQL
+            for (DbObject otherView : views) {
+                if (view.schema().equalsIgnoreCase(otherView.schema()) &&
+                    view.name().equalsIgnoreCase(otherView.name())) {
+                    continue; // Skip self-reference
+                }
+
+                String otherViewName = otherView.name().toLowerCase();
+                String otherSchemaView = otherView.schema().toLowerCase() + "." + otherViewName;
+
+                // Use regex patterns to match view references in SQL
+                // Pattern 1: [schema].[viewname] or schema.viewname
+                String pattern1 = "\\[?" + java.util.regex.Pattern.quote(otherView.schema().toLowerCase()) + "\\]?\\.\\[?" +
+                                 java.util.regex.Pattern.quote(otherViewName) + "\\]?";
+
+                // Pattern 2: [viewname] or just viewname (with word boundaries)
+                String pattern2 = "\\[?" + java.util.regex.Pattern.quote(otherViewName) + "\\]?";
+
+                // Check if referenced in FROM or JOIN clauses
+                String fromJoinPattern = "(?:from|join)\\s+" + pattern1;
+                String fromJoinPattern2 = "(?:from|join)\\s+" + pattern2;
+
+                if (java.util.regex.Pattern.compile(fromJoinPattern, java.util.regex.Pattern.CASE_INSENSITIVE).matcher(sql).find() ||
+                    java.util.regex.Pattern.compile(fromJoinPattern2, java.util.regex.Pattern.CASE_INSENSITIVE).matcher(sql).find()) {
+
+                    String depKey = otherView.schema().toLowerCase() + "." + otherView.name().toLowerCase();
+                    deps.add(depKey);
+
+                    logger.debug("View {}.{} depends on {}.{}",
+                               view.schema(), view.name(), otherView.schema(), otherView.name());
+                }
+            }
+
+            if (!deps.isEmpty()) {
+                String viewKey = view.schema().toLowerCase() + "." + view.name().toLowerCase();
+                dependencies.put(viewKey, deps);
+            }
+        }
+
+        logger.info("Extracted dependencies for {} views", dependencies.size());
+        return dependencies;
+    }
+
+    /**
+     * Sorts views by dependency using topological sort.
+     * Views that are dependencies come before views that depend on them.
+     *
+     * @param views List of views to sort
+     * @param dependencies Map of view dependencies (using schema.name as key)
+     * @return List of views sorted by dependency order
+     */
+    private List<DbObject> sortViewsByDependency(List<DbObject> views,
+                                                   java.util.Map<String, java.util.Set<String>> dependencies) {
+        List<DbObject> sorted = new ArrayList<>();
+        java.util.Set<String> visited = new java.util.HashSet<>();
+        java.util.Set<String> visiting = new java.util.HashSet<>();
+
+        // Create a map for quick lookup by schema.name
+        java.util.Map<String, DbObject> viewMap = new java.util.HashMap<>();
+        for (DbObject view : views) {
+            String key = view.schema().toLowerCase() + "." + view.name().toLowerCase();
+            viewMap.put(key, view);
+        }
+
+        for (DbObject view : views) {
+            String viewKey = view.schema().toLowerCase() + "." + view.name().toLowerCase();
+            if (!visited.contains(viewKey)) {
+                topologicalSortViews(view, viewMap, dependencies, visited, visiting, sorted);
+            }
+        }
+
+        logger.info("Sorted {} views by dependency order", sorted.size());
+        return sorted;
+    }
+
+    /**
+     * Performs topological sort for views using DFS with cycle detection.
+     */
+    private void topologicalSortViews(DbObject view,
+                                      java.util.Map<String, DbObject> viewMap,
+                                      java.util.Map<String, java.util.Set<String>> dependencies,
+                                      java.util.Set<String> visited,
+                                      java.util.Set<String> visiting,
+                                      List<DbObject> sorted) {
+        String viewKey = view.schema().toLowerCase() + "." + view.name().toLowerCase();
+
+        if (visiting.contains(viewKey)) {
+            // Circular dependency detected - log warning and continue
+            logger.warn("Circular view dependency detected involving view: {}", viewKey);
+            return;
+        }
+
+        if (visited.contains(viewKey)) {
+            return;
+        }
+
+        visiting.add(viewKey);
+
+        // Visit dependencies first (views this view depends on)
+        java.util.Set<String> deps = dependencies.get(viewKey);
+        if (deps != null) {
+            for (String depKey : deps) {
+                // Find the view object for this dependency
+                DbObject depView = viewMap.get(depKey);
+
+                if (depView != null) {
+                    topologicalSortViews(depView, viewMap, dependencies, visited, visiting, sorted);
+                } else {
+                    logger.debug("Dependency {} not found in current view set (might be a table or external view)", depKey);
+                }
+            }
+        }
+
+        visiting.remove(viewKey);
+        visited.add(viewKey);
+
+        // Add this view to the sorted list
+        sorted.add(view);
+        logger.debug("Added view {} to sorted list (position {})", viewKey, sorted.size());
+    }
+
+    /**
      * Orders database objects by dependency to ensure objects are created before they are referenced.
      *
      * Dependency order:
@@ -838,19 +985,23 @@ public class MSSQLDatabaseService implements DatabaseService {
      * 4. Sequences - standalone objects
      * 5. Synonyms - aliases to other objects
      * 6. Functions, Procedures - depend on tables
-     * 7. Views - depend on tables and functions
+     * 7. Views - depend on tables and functions (sorted by inter-view dependencies)
      * 8. Triggers - depend on tables
      */
     private List<DbObject> orderByDependency(List<DbObject> dbChanges) {
         List<DbObject> orderedList = new ArrayList<>();
 
-        // Separate tables from other objects
+        // Separate tables, views, and other objects
         List<DbObject> tables = dbChanges.stream()
                 .filter(obj -> obj.type() == DbObjectType.TABLE)
                 .toList();
 
-        List<DbObject> nonTables = dbChanges.stream()
-                .filter(obj -> obj.type() != DbObjectType.TABLE)
+        List<DbObject> views = dbChanges.stream()
+                .filter(obj -> obj.type() == DbObjectType.VIEW)
+                .toList();
+
+        List<DbObject> nonTablesAndViews = dbChanges.stream()
+                .filter(obj -> obj.type() != DbObjectType.TABLE && obj.type() != DbObjectType.VIEW)
                 .sorted((a, b) -> {
                     int priorityA = getDependencyPriority(a.type());
                     int priorityB = getDependencyPriority(b.type());
@@ -858,12 +1009,43 @@ public class MSSQLDatabaseService implements DatabaseService {
                 })
                 .toList();
 
+        logger.info("Ordering dependencies: {} tables, {} views, {} other objects",
+                   tables.size(), views.size(), nonTablesAndViews.size());
+
         // Order tables by foreign key dependencies
         List<DbObject> orderedTables = orderTablesByForeignKeys(tables);
 
-        // Combine: tables first, then other objects
-        orderedList.addAll(orderedTables);
-        orderedList.addAll(nonTables);
+        // Order views by their inter-view dependencies
+        if (!views.isEmpty()) {
+            logger.info("Analyzing view dependencies for {} views...", views.size());
+            java.util.Map<String, java.util.Set<String>> viewDependencies = extractViewDependenciesFromSQL(views);
+
+            if (!viewDependencies.isEmpty()) {
+                logger.info("Found dependencies for {} views", viewDependencies.size());
+                viewDependencies.forEach((view, deps) ->
+                    logger.debug("View {} depends on: {}", view, deps)
+                );
+            } else {
+                logger.info("No inter-view dependencies detected");
+            }
+
+            List<DbObject> orderedViews = sortViewsByDependency(views, viewDependencies);
+
+            logger.info("View creation order:");
+            for (int i = 0; i < orderedViews.size(); i++) {
+                DbObject v = orderedViews.get(i);
+                logger.info("  {}. {}.{}", i + 1, v.schema(), v.name());
+            }
+
+            // Combine: tables first, then other objects (by priority), then views (sorted by dependency)
+            orderedList.addAll(orderedTables);
+            orderedList.addAll(nonTablesAndViews);
+            orderedList.addAll(orderedViews);
+        } else {
+            // No views, just combine tables and other objects
+            orderedList.addAll(orderedTables);
+            orderedList.addAll(nonTablesAndViews);
+        }
 
         return orderedList;
     }
@@ -934,6 +1116,45 @@ public class MSSQLDatabaseService implements DatabaseService {
     }
 
     /**
+     * Extracts view dependencies from a view definition.
+     * Views can reference other views, and this method finds those references.
+     *
+     * @param view The view object
+     * @return List of referenced views in format "schema.view"
+     */
+    private List<String> extractViewDependencies(DbObject view) {
+        if (view.definition() == null) {
+            return List.of();
+        }
+
+        List<String> dependencies = new ArrayList<>();
+        String definition = view.definition().toUpperCase();
+
+        // Match: SELECT ... FROM [schema].[view] or [view]
+        // Pattern: FROM followed by schema.view or just view
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+            "FROM\\s+(?:\\[(\\w+)\\]\\.)?\\[(\\w+)\\]",
+            java.util.regex.Pattern.CASE_INSENSITIVE
+        );
+
+        java.util.regex.Matcher matcher = pattern.matcher(definition);
+        while (matcher.find()) {
+            String schema = matcher.group(1);
+            String viewName = matcher.group(2);
+
+            // If schema not specified, assume dbo
+            if (schema == null) {
+                schema = "dbo";
+            }
+
+            String referencedView = schema.toLowerCase() + "." + viewName.toLowerCase();
+            dependencies.add(referencedView);
+        }
+
+        return dependencies;
+    }
+
+    /**
      * Performs topological sort to order tables by dependencies.
      * Uses DFS with cycle detection.
      */
@@ -984,16 +1205,14 @@ public class MSSQLDatabaseService implements DatabaseService {
      */
     private int getDependencyPriority(DbObjectType type) {
         return switch (type) {
-            case FULLTEXT_CATALOG -> 0;   // Full-Text catalogs must be created before tables/indexes
-            case TABLE -> 1;              // Tables first (handled separately with FK ordering)
-            case SCALAR_TYPE -> 2;        // Types before functions that might use them
-            case TABLE_TYPE -> 2;         // Types before functions that might use them
-            case SEQUENCE -> 3;           // Sequences are standalone
-            case SYNONYM -> 4;            // Synonyms reference other objects
-            case FUNCTION -> 5;           // Functions depend on tables
-            case PROCEDURE -> 5;          // Procedures depend on tables
-            case VIEW -> 6;               // Views depend on tables and functions
-            case TRIGGER -> 7;            // Triggers depend on tables
+            case FULLTEXT_CATALOG -> 0;             // Full-Text catalogs must be created before tables/indexes
+            case TABLE -> 1;                        // Tables first (handled separately with FK ordering)
+            case SCALAR_TYPE, TABLE_TYPE -> 2;      // Types before functions that might use them
+            case SEQUENCE -> 3;                     // Sequences are standalone
+            case SYNONYM -> 4;                      // Synonyms reference other objects
+            case FUNCTION, PROCEDURE -> 5;          // Functions & Procedures depend on tables
+            case VIEW -> 6;                         // Views depend on tables and functions
+            case TRIGGER -> 7;                      // Triggers depend on tables
         };
     }
 
@@ -1126,11 +1345,9 @@ public class MSSQLDatabaseService implements DatabaseService {
             """.formatted(dropKeyword, obj.schema(), obj.name());
     }
 
-    /**
-     * Converts a string to a Spring Resource for use with ResourceDatabasePopulator.
-     */
-    private Resource toResource(String content) {
-        return new InputStreamResource(
-                new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8)));
+    private String fastDeterministicHash(String input) {
+        CRC32 crc = new CRC32();
+        crc.update(input.getBytes(StandardCharsets.UTF_8));
+        return Long.toHexString(crc.getValue());
     }
 }
