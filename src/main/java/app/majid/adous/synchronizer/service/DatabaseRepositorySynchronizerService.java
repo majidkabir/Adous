@@ -83,7 +83,7 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
 
         List<RepoObject> repoChanges = dbObjects.stream()
                 .map(o -> dbObjectToRepoObject(o, gitService.getBasePath()))
-                .filter(o -> !ignoreService.shouldIgnore(o.path()))
+                .filter(o -> ignoreService.shouldProcess(o.path()))
                 .toList();
 
         logger.debug("After filtering, {} objects will be committed", repoChanges.size());
@@ -330,7 +330,7 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
                 .parallelStream()
                 .map(this::computeDiffForObject)
                 .filter(Objects::nonNull)
-                .filter(o -> !ignoreService.shouldIgnore(o.path()))
+                .filter(o -> ignoreService.shouldProcess(o.path()))
                 .toList();
     }
 
