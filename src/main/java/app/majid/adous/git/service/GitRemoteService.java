@@ -9,14 +9,10 @@ import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.TagOpt;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class GitRemoteService {
-
-    private static final Logger log = LoggerFactory.getLogger(GitRemoteService.class);
 
     private final Repository repo;
     private final CredentialsProvider creds;

@@ -49,9 +49,9 @@ public class SynchronizerIgnoreService {
         }
     }
 
-    public boolean shouldIgnore(String filePath) {
+    public boolean shouldProcess(String filePath) {
         return ignoreMatchers.stream()
-                .anyMatch(matcher ->
+                .noneMatch(matcher ->
                         matcher.matches(FileSystems.getDefault().getPath(filePath)));
     }
 }
