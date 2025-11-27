@@ -127,6 +127,23 @@ class DbObjectMapperTest {
         }
 
         @Test
+        @DisplayName("Should map table path correctly")
+        void shouldMapTablePath() {
+            // Arrange
+            String path = "base/TABLE/dbo/users.sql";
+            String definition = "CREATE TABLE [dbo].[users]\n(\n    [id] int IDENTITY(1,1) NOT NULL,\n    [username] nvarchar(100) NOT NULL,\n    CONSTRAINT [PK_users] PRIMARY KEY ([id])\n);\nGO";
+
+            // Act
+            DbObject result = mapper.fromPath(path, definition);
+
+            // Assert
+            assertEquals("dbo", result.schema());
+            assertEquals("users", result.name());
+            assertEquals(DbObjectType.TABLE, result.type());
+            assertEquals(definition, result.definition());
+        }
+
+        @Test
         @DisplayName("Should handle null definition")
         void shouldHandleNullDefinition() {
             // Arrange

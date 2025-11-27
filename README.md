@@ -1,6 +1,6 @@
 # Adous
 
-**Adous** is a Spring Boot service for managing and synchronizing multiple database instances with a Git repository. It enables version control for database objects (stored procedures, functions, views, triggers) and provides bidirectional synchronization between databases and Git.
+**Adous** is a Spring Boot service for managing and synchronizing multiple database instances with a Git repository. It enables version control for database objects (stored procedures, functions, views, triggers, tables, synonyms, sequences, user-defined types) and provides bidirectional synchronization between databases and Git.
 
 ## Features
 

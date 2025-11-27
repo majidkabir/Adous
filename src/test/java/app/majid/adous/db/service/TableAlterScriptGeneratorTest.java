@@ -1,0 +1,667 @@
+package app.majid.adous.db.service;
+
+import app.majid.adous.synchronizer.model.DbObject;
+import app.majid.adous.synchronizer.model.DbObjectType;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.testcontainers.containers.MSSQLServerContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import javax.sql.DataSource;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Integration test for TableAlterScriptGenerator.
+ * Uses Testcontainers to spin up a real SQL Server instance.
+ */
+@Testcontainers
+class TableAlterScriptGeneratorTest {
+
+    @Container
+    static MSSQLServerContainer<?> mssqlServer = new MSSQLServerContainer<>("mcr.microsoft.com/mssql/server:2022-latest")
+            .acceptLicense();
+
+    private static JdbcTemplate jdbcTemplate;
+    private TableAlterScriptGenerator alterScriptGenerator;
+
+    @BeforeEach
+    void setUp() {
+        // Initialize JdbcTemplate once and reuse it
+        if (jdbcTemplate == null) {
+            HikariConfig config = new HikariConfig();
+            config.setJdbcUrl(mssqlServer.getJdbcUrl());
+            config.setUsername(mssqlServer.getUsername());
+            config.setPassword(mssqlServer.getPassword());
+            config.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+            config.setMaximumPoolSize(5);
+            DataSource dataSource = new HikariDataSource(config);
+            jdbcTemplate = new JdbcTemplate(dataSource);
+        }
+
+        alterScriptGenerator = new TableAlterScriptGenerator(jdbcTemplate);
+
+        // Clean up any existing test tables
+        cleanupTables();
+    }
+
+    private void cleanupTables() {
+        try {
+            // Drop in correct order (child tables first due to FK constraints)
+            jdbcTemplate.execute("IF OBJECT_ID('dbo.test_orders', 'U') IS NOT NULL DROP TABLE dbo.test_orders");
+            jdbcTemplate.execute("IF OBJECT_ID('dbo.test_users', 'U') IS NOT NULL DROP TABLE dbo.test_users");
+            jdbcTemplate.execute("IF OBJECT_ID('dbo.test_products', 'U') IS NOT NULL DROP TABLE dbo.test_products");
+        } catch (Exception e) {
+            // Ignore cleanup errors
+            System.err.println("Cleanup error: " + e.getMessage());
+        }
+    }
+
+    @Nested
+    @DisplayName("New Table Creation Tests")
+    class NewTableCreationTests {
+
+        @Test
+        @DisplayName("Should return CREATE TABLE script when table doesn't exist")
+        void shouldReturnCreateTableForNewTable() {
+            // Arrange
+            String createTableDef = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        [email] nvarchar(255) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, createTableDef);
+
+            // Act
+            String result = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert
+            assertNotNull(result);
+            assertTrue(result.contains("CREATE TABLE"));
+            assertTrue(result.contains("[test_users]"));
+            assertEquals(createTableDef, result, "Should return exact CREATE TABLE definition for new table");
+        }
+
+        @Test
+        @DisplayName("Should execute generated CREATE TABLE script successfully")
+        void shouldExecuteCreateTableScript() {
+            // Arrange
+            String createTableDef = """
+                    CREATE TABLE [dbo].[test_products]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [name] nvarchar(200) NOT NULL,
+                        [price] decimal(10,2) NOT NULL,
+                        CONSTRAINT [PK_test_products] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_products", DbObjectType.TABLE, createTableDef);
+
+            // Act
+            String script = alterScriptGenerator.generateAlterScript(tableObject);
+            jdbcTemplate.execute(script.replace("GO", ""));
+
+            // Assert
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM sys.tables WHERE name = 'test_products'",
+                    Integer.class
+            );
+            assertEquals(1, count, "Table should be created");
+        }
+    }
+
+    @Nested
+    @DisplayName("Column Modification Tests")
+    class ColumnModificationTests {
+
+        @Test
+        @DisplayName("Should generate ADD COLUMN statement for new column")
+        void shouldGenerateAddColumnStatement() {
+            // Arrange - Create initial table
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(100) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            // Git definition with new column
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        [email] nvarchar(255) NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert
+            assertNotNull(alterScript);
+            assertTrue(alterScript.contains("ADD [email]"), "Should contain ADD COLUMN statement");
+            assertTrue(alterScript.contains("nvarchar(255)"), "Should include correct data type");
+            assertTrue(alterScript.contains("NULL"), "Should specify nullability");
+        }
+
+        @Test
+        @DisplayName("Should generate DROP COLUMN statement for removed column")
+        void shouldGenerateDropColumnStatement() {
+            // Arrange - Create table with extra column
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(100) NOT NULL,
+                        old_field NVARCHAR(50) NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            // Git definition without old_field
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert
+            assertNotNull(alterScript);
+            assertTrue(alterScript.contains("DROP COLUMN [old_field]"), "Should contain DROP COLUMN statement");
+        }
+
+        @Test
+        @DisplayName("Should generate ALTER COLUMN statement for data type change")
+        void shouldGenerateAlterColumnForDataTypeChange() {
+            // Arrange - Create table with smaller varchar
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(50) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            // Git definition with larger varchar
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert
+            assertNotNull(alterScript);
+            assertTrue(alterScript.contains("ALTER COLUMN [username]"), "Should contain ALTER COLUMN statement");
+            assertTrue(alterScript.contains("nvarchar(100)"), "Should include new data type");
+        }
+
+        @Test
+        @DisplayName("Should generate ALTER COLUMN statement for nullability change")
+        void shouldGenerateAlterColumnForNullabilityChange() {
+            // Arrange - Create table with nullable column
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        email NVARCHAR(255) NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            // Git definition with NOT NULL
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [email] nvarchar(255) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert
+            assertNotNull(alterScript);
+            assertTrue(alterScript.contains("ALTER COLUMN [email]"), "Should contain ALTER COLUMN statement");
+            assertTrue(alterScript.contains("NOT NULL"), "Should specify NOT NULL");
+        }
+
+        @Test
+        @DisplayName("Should execute ALTER COLUMN script successfully")
+        void shouldExecuteAlterColumnScript() {
+            // Arrange - Create table and insert data
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(50) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+            jdbcTemplate.execute("INSERT INTO dbo.test_users (username) VALUES ('testuser')");
+
+            // Git definition with larger varchar
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(200) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+            String[] statements = alterScript.split("GO");
+            for (String stmt : statements) {
+                if (!stmt.trim().isEmpty()) {
+                    jdbcTemplate.execute(stmt.trim());
+                }
+            }
+
+            // Assert - Verify data is preserved
+            String username = jdbcTemplate.queryForObject(
+                    "SELECT username FROM dbo.test_users WHERE id = 1",
+                    String.class
+            );
+            assertEquals("testuser", username, "Data should be preserved after ALTER COLUMN");
+
+            // Verify column type changed
+            Integer maxLength = jdbcTemplate.queryForObject("""
+                    SELECT c.max_length / 2
+                    FROM sys.columns c
+                    JOIN sys.tables t ON c.object_id = t.object_id
+                    WHERE t.name = 'test_users' AND c.name = 'username'
+                    """, Integer.class);
+            assertEquals(200, maxLength, "Column length should be updated to 200");
+        }
+    }
+
+    @Nested
+    @DisplayName("Primary Key Modification Tests")
+    class PrimaryKeyModificationTests {
+
+        @Test
+        @DisplayName("Should parse PRIMARY KEY from CREATE TABLE correctly")
+        void shouldParsePrimaryKeyCorrectly() {
+            // This test verifies the regex parsing logic works
+            String createTableSql = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id], [username])
+                    );
+                    GO
+                    """;
+
+            // Use reflection to test the private parseCreateTableDefinition method
+            // For now, just verify through the public API
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, createTableSql);
+
+            // The table doesn't exist, so it should return the CREATE TABLE as-is
+            String result = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // If parsing worked, the result should be the original SQL
+            assertNotNull(result);
+            assertTrue(result.contains("PRIMARY KEY"), "Should contain PRIMARY KEY in result");
+        }
+
+        @Test
+        @DisplayName("Should generate DROP and ADD PRIMARY KEY when changed")
+        void shouldGenerateDropAndAddPrimaryKey() {
+            // Arrange - Create table with PK on id
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT NOT NULL,
+                        username NVARCHAR(100) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            // Git definition with composite PK
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id], [username])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert
+            assertNotNull(alterScript);
+            assertTrue(alterScript.contains("DROP CONSTRAINT [pk_test_users]"),
+                    "Should drop existing primary key. Actual script: " + alterScript);
+            assertTrue(alterScript.contains("ADD CONSTRAINT [pk_test_users] PRIMARY KEY ([id], [username])"),
+                    "Should add new composite primary key");
+        }
+    }
+
+    @Nested
+    @DisplayName("No Changes Tests")
+    class NoChangesTests {
+
+        @Test
+        @DisplayName("Should return empty string when table structure matches")
+        void shouldReturnEmptyWhenNoChanges() {
+            // Arrange - Create table
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(100) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            // Git definition matches database
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert
+            assertEquals("", alterScript, "Should return empty string when no changes needed");
+        }
+    }
+
+    @Nested
+    @DisplayName("Complex Scenario Tests")
+    class ComplexScenarioTests {
+
+        @Test
+        @DisplayName("Should handle multiple column changes in single alter script")
+        void shouldHandleMultipleColumnChanges() {
+            // Arrange - Create initial table
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(50) NOT NULL,
+                        old_field NVARCHAR(100) NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            // Git definition with: column removed, column added, column type changed
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        [email] nvarchar(255) NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert
+            assertNotNull(alterScript);
+            assertTrue(alterScript.contains("DROP COLUMN [old_field]"), "Should drop old_field");
+            assertTrue(alterScript.contains("ADD [email]"), "Should add email");
+            assertTrue(alterScript.contains("ALTER COLUMN [username]"), "Should alter username type");
+        }
+
+        @Test
+        @DisplayName("Should preserve data through complex schema evolution")
+        void shouldPreserveDataThroughComplexChanges() {
+            // Arrange - Create table and insert test data
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(50) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+            jdbcTemplate.execute("INSERT INTO dbo.test_users (username) VALUES ('alice')");
+            jdbcTemplate.execute("INSERT INTO dbo.test_users (username) VALUES ('bob')");
+
+            // Git definition with changes
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        [email] nvarchar(255) NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act - Generate and execute ALTER script
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+            String[] statements = alterScript.split("GO");
+            for (String stmt : statements) {
+                if (!stmt.trim().isEmpty()) {
+                    jdbcTemplate.execute(stmt.trim());
+                }
+            }
+
+            // Assert - Verify data is preserved
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM dbo.test_users",
+                    Integer.class
+            );
+            assertEquals(2, count, "Both rows should still exist");
+
+            String username1 = jdbcTemplate.queryForObject(
+                    "SELECT username FROM dbo.test_users WHERE id = 1",
+                    String.class
+            );
+            assertEquals("alice", username1, "First user's data should be preserved");
+
+            String username2 = jdbcTemplate.queryForObject(
+                    "SELECT username FROM dbo.test_users WHERE id = 2",
+                    String.class
+            );
+            assertEquals("bob", username2, "Second user's data should be preserved");
+
+            // Verify new column exists
+            Integer emailCount = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*) FROM sys.columns c
+                    JOIN sys.tables t ON c.object_id = t.object_id
+                    WHERE t.name = 'test_users' AND c.name = 'email'
+                    """, Integer.class);
+            assertEquals(1, emailCount, "Email column should be added");
+        }
+
+        @Test
+        @DisplayName("Should handle table with foreign key relationships")
+        void shouldHandleTableWithForeignKeys() {
+            // Arrange - Create parent and child tables
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(100) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_orders (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        user_id INT NOT NULL,
+                        amount DECIMAL(10,2) NOT NULL,
+                        CONSTRAINT PK_test_orders PRIMARY KEY (id),
+                        CONSTRAINT FK_test_orders_users FOREIGN KEY (user_id) REFERENCES dbo.test_users(id)
+                    )
+                    """);
+
+            // Insert test data
+            jdbcTemplate.execute("INSERT INTO dbo.test_users (username) VALUES ('alice')");
+            jdbcTemplate.execute("INSERT INTO dbo.test_orders (user_id, amount) VALUES (1, 99.99)");
+
+            // Git definition with new column in orders table
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_orders]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [user_id] int NOT NULL,
+                        [amount] decimal(10,2) NOT NULL,
+                        [status] nvarchar(50) NULL,
+                        CONSTRAINT [PK_test_orders] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_orders", DbObjectType.TABLE, gitDefinition);
+
+            // Act - Generate and execute ALTER script
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+            String[] statements = alterScript.split("GO");
+            for (String stmt : statements) {
+                if (!stmt.trim().isEmpty()) {
+                    jdbcTemplate.execute(stmt.trim());
+                }
+            }
+
+            // Assert - Verify data and FK relationship preserved
+            Integer orderCount = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM dbo.test_orders",
+                    Integer.class
+            );
+            assertEquals(1, orderCount, "Order should still exist");
+
+            // Verify FK still works (can't insert invalid user_id)
+            assertThrows(Exception.class, () -> {
+                jdbcTemplate.execute("INSERT INTO dbo.test_orders (user_id, amount, status) VALUES (999, 50.00, 'pending')");
+            }, "Foreign key constraint should still be enforced");
+        }
+    }
+
+    @Nested
+    @DisplayName("Edge Case Tests")
+    class EdgeCaseTests {
+
+        @Test
+        @DisplayName("Should handle identity columns correctly")
+        void shouldHandleIdentityColumns() {
+            // Arrange - Create table with identity column
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(100) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            // Git definition - identity column unchanged
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        [email] nvarchar(255) NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert - Should not try to alter identity column
+            assertFalse(alterScript.contains("ALTER COLUMN [id]"),
+                    "Should not try to alter identity column");
+        }
+
+        @Test
+        @DisplayName("Should handle case-insensitive column names")
+        void shouldHandleCaseInsensitiveColumnNames() {
+            // Arrange - Create table with mixed case
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        Id INT IDENTITY(1,1) NOT NULL,
+                        UserName NVARCHAR(100) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (Id)
+                    )
+                    """);
+
+            // Git definition with lowercase
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert - Should recognize columns are the same (case-insensitive match)
+            assertEquals("", alterScript, "Should handle case-insensitive column matching");
+        }
+    }
+}
+

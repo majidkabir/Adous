@@ -8,5 +8,7 @@ public enum DbObjectType {
     SYNONYM,
     TABLE_TYPE,
     SEQUENCE,
-    SCALAR_TYPE
+    SCALAR_TYPE,
+    TABLE,
+    FULLTEXT_CATALOG
 }
