@@ -6,17 +6,22 @@ import app.majid.adous.synchronizer.model.DbObjectType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.InputStreamResource;
-import org.springframework.core.io.Resource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.io.ByteArrayInputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+import static app.majid.adous.db.service.SqlServerTypeFormatter.formatDataType;
 
 /**
  * Microsoft SQL Server implementation of DatabaseService.
@@ -43,7 +48,7 @@ public class MSSQLDatabaseService implements DatabaseService {
         logger.debug("Fetching database objects from SQL Server");
 
         // Get objects from sys.sql_modules (procedures, functions, views, triggers)
-        List<DbObject> objects = jdbcTemplate.query(buildGetObjectsQuery(), (rs, rowNum) ->
+        List<DbObject> objects = jdbcTemplate.query(buildGetObjectsQuery(), (rs, _) ->
                 new DbObject(
                         rs.getString("schema_name").toLowerCase(),
                         rs.getString("name").toLowerCase(),
@@ -52,22 +57,11 @@ public class MSSQLDatabaseService implements DatabaseService {
                 )
         );
 
-        // Get Full-Text catalogs (must be retrieved before tables/indexes that use them)
         objects.addAll(getFullTextCatalogs());
-
-        // Get synonyms
         objects.addAll(getSynonyms());
-
-        // Get table types
         objects.addAll(getTableTypes());
-
-        // Get sequences
         objects.addAll(getSequences());
-
-        // Get scalar types
         objects.addAll(getScalarTypes());
-
-        // Get tables
         objects.addAll(getTables());
 
         logger.debug("Retrieved {} database objects", objects.size());
@@ -141,17 +135,14 @@ public class MSSQLDatabaseService implements DatabaseService {
                 ORDER BY schema_name, name
                 """;
 
-        List<DbObject> synonyms = jdbcTemplate.query(synonymQuery, (rs, rowNum) -> {
-            String schemaName = rs.getString("schema_name").toLowerCase();
+        List<DbObject> synonyms = jdbcTemplate.query(synonymQuery, (rs, _) -> {
+            String schema = rs.getString("schema_name").toLowerCase();
             String name = rs.getString("name").toLowerCase();
             String targetObject = rs.getString("target_object");
 
-            String definition = String.format(
-                    "CREATE SYNONYM [%s].[%s] FOR %s;%nGO",
-                    schemaName, name, targetObject
-            );
+            String definition = "CREATE SYNONYM [%s].[%s] FOR %s;%nGO".formatted(schema, name, targetObject);
 
-            return new DbObject(schemaName, name, DbObjectType.SYNONYM, definition);
+            return new DbObject(schema, name, DbObjectType.SYNONYM, definition);
         });
 
         logger.debug("Retrieved {} synonyms", synonyms.size());
@@ -176,14 +167,14 @@ public class MSSQLDatabaseService implements DatabaseService {
                 ORDER BY schema_name, name
                 """;
 
-        List<DbObject> tableTypes = jdbcTemplate.query(tableTypeQuery, (rs, rowNum) -> {
-            String schemaName = rs.getString("schema_name").toLowerCase();
+        List<DbObject> tableTypes = jdbcTemplate.query(tableTypeQuery, (rs, _) -> {
+            String schema = rs.getString("schema_name").toLowerCase();
             String name = rs.getString("name").toLowerCase();
             int objectId = rs.getInt("object_id");
 
-            String definition = buildTableTypeDefinition(schemaName, name, objectId);
+            String definition = buildTableTypeDefinition(schema, name, objectId);
 
-            return new DbObject(schemaName, name, DbObjectType.TABLE_TYPE, definition);
+            return new DbObject(schema, name, DbObjectType.TABLE_TYPE, definition);
         });
 
         logger.debug("Retrieved {} table types", tableTypes.size());
@@ -217,41 +208,26 @@ public class MSSQLDatabaseService implements DatabaseService {
                 ORDER BY c.column_id
                 """;
 
-        List<String> columns = jdbcTemplate.query(columnQuery, (rs, rowNum) -> {
-            String columnName = rs.getString("column_name");
+        List<String> columns = jdbcTemplate.query(columnQuery, (rs, _) -> {
+            String column = rs.getString("column_name");
             String dataType = rs.getString("data_type");
             int maxLength = rs.getInt("max_length");
             int precision = rs.getInt("precision");
             int scale = rs.getInt("scale");
-            boolean isNullable = rs.getBoolean("is_nullable");
-            boolean isIdentity = rs.getBoolean("is_identity");
+            boolean nullable = rs.getBoolean("is_nullable");
+            boolean identity = rs.getBoolean("is_identity");
             int identitySeed = rs.getInt("identity_seed");
             int identityIncrement = rs.getInt("identity_increment");
 
-            StringBuilder columnDef = new StringBuilder();
-            columnDef.append("[").append(columnName).append("] ");
-            columnDef.append(formatDataType(dataType, maxLength, precision, scale));
-
-            if (isIdentity) {
-                columnDef.append(" IDENTITY(").append(identitySeed).append(",")
-                        .append(identityIncrement).append(")");
-            }
-
-            if (!isNullable) {
-                columnDef.append(" NOT NULL");
-            } else {
-                columnDef.append(" NULL");
-            }
-
-            return columnDef.toString();
+            return "[" + column + "] " +
+                    formatDataType(dataType, maxLength, precision, scale) +
+                    (identity ? " IDENTITY(" + identitySeed + "," + identityIncrement + ")" : "") +
+                    (nullable ? " NULL" : " NOT NULL");
         }, objectId);
 
-        StringBuilder definition = new StringBuilder();
-        definition.append("CREATE TYPE [").append(schemaName).append("].[").append(typeName).append("] AS TABLE\n(\n");
-        definition.append("    ").append(String.join(",\n    ", columns));
-        definition.append("\n);\nGO");
-
-        return definition.toString();
+        return "CREATE TYPE [" + schemaName + "].[" + typeName + "] AS TABLE\n(\n" +
+                "    " + String.join(",\n    ", columns) +
+                "\n);\nGO";
     }
 
     /**
@@ -279,41 +255,35 @@ public class MSSQLDatabaseService implements DatabaseService {
                 ORDER BY schema_name, name
                 """;
 
-        List<DbObject> sequences = jdbcTemplate.query(sequenceQuery, (rs, rowNum) -> {
-            String schemaName = rs.getString("schema_name").toLowerCase();
+        List<DbObject> sequences = jdbcTemplate.query(sequenceQuery, (rs, _) -> {
+            String schema = rs.getString("schema_name").toLowerCase();
             String name = rs.getString("name").toLowerCase();
             long startValue = rs.getLong("start_value");
             long increment = rs.getLong("increment");
-            long minimumValue = rs.getLong("minimum_value");
-            long maximumValue = rs.getLong("maximum_value");
-            boolean isCycling = rs.getBoolean("is_cycling");
-            boolean isCached = rs.getBoolean("is_cached");
+            long minValue = rs.getLong("minimum_value");
+            long maxValue = rs.getLong("maximum_value");
+            boolean cycling = rs.getBoolean("is_cycling");
+            boolean cached = rs.getBoolean("is_cached");
             int cacheSize = rs.getInt("cache_size");
             String dataType = rs.getString("data_type");
 
-            StringBuilder definition = new StringBuilder();
-            definition.append("CREATE SEQUENCE [").append(schemaName).append("].[").append(name).append("]\n");
-            definition.append("    AS ").append(dataType).append("\n");
-            definition.append("    START WITH ").append(startValue).append("\n");
-            definition.append("    INCREMENT BY ").append(increment).append("\n");
-            definition.append("    MINVALUE ").append(minimumValue).append("\n");
-            definition.append("    MAXVALUE ").append(maximumValue).append("\n");
+            String definition = """
+                CREATE SEQUENCE [%s].[%s]
+                    AS %s
+                    START WITH %d
+                    INCREMENT BY %d
+                    MINVALUE %d
+                    MAXVALUE %d
+                    %s
+                    %s;
+                GO
+            """.formatted(
+                    schema, name, dataType, startValue, increment, minValue, maxValue,
+                    cycling ? "CYCLE" : "NO CYCLE",
+                    (cached && cacheSize > 0) ? "CACHE " + cacheSize : "NO CACHE"
+            );
 
-            if (isCycling) {
-                definition.append("    CYCLE\n");
-            } else {
-                definition.append("    NO CYCLE\n");
-            }
-
-            if (isCached && cacheSize > 0) {
-                definition.append("    CACHE ").append(cacheSize);
-            } else {
-                definition.append("    NO CACHE");
-            }
-
-            definition.append(";\nGO");
-
-            return new DbObject(schemaName, name, DbObjectType.SEQUENCE, definition.toString());
+            return new DbObject(schema, name, DbObjectType.SEQUENCE, definition);
         });
 
         logger.debug("Retrieved {} sequences", sequences.size());
@@ -348,28 +318,41 @@ public class MSSQLDatabaseService implements DatabaseService {
                 ORDER BY schema_name, name
                 """;
 
-        List<DbObject> scalarTypes = jdbcTemplate.query(scalarTypeQuery, (rs, rowNum) -> {
-            String schemaName = rs.getString("schema_name").toLowerCase();
+        List<DbObject> scalarTypes = jdbcTemplate.query(scalarTypeQuery, (rs, _) -> {
+            String schema = rs.getString("schema_name").toLowerCase();
             String name = rs.getString("name").toLowerCase();
-            String baseType = rs.getString("base_type");
-            int maxLength = rs.getInt("max_length");
+            String base = rs.getString("base_type");
+            int maxLen = rs.getInt("max_length");
             int precision = rs.getInt("precision");
             int scale = rs.getInt("scale");
-            boolean isNullable = rs.getBoolean("is_nullable");
+            boolean nullable = rs.getBoolean("is_nullable");
             String defaultValue = rs.getString("default_value");
             String ruleName = rs.getString("rule_name");
 
-            StringBuilder definition = new StringBuilder();
-            definition.append("CREATE TYPE [").append(schemaName).append("].[").append(name).append("]\n");
-            definition.append("    FROM ").append(formatDataType(baseType, maxLength, precision, scale));
+            String createType = """
+            CREATE TYPE [%s].[%s]
+                FROM %s%s;
+            GO
 
-            if (!isNullable) {
-                definition.append(" NOT NULL");
-            }
+            """.formatted(
+                    schema, name,
+                    formatDataType(base, maxLen, precision, scale),
+                    nullable ? "" : " NOT NULL"
+            );
 
-            definition.append(";\nGO");
+            String defaultBinding =
+                    defaultValue == null ? "" :
+                            "EXEC sp_bindefault '%s', '[%s].[%s]';\nGO\n\n"
+                                    .formatted(defaultValue, schema, name);
 
-            return new DbObject(schemaName, name, DbObjectType.SCALAR_TYPE, definition.toString());
+            String ruleBinding =
+                    ruleName == null ? "" :
+                            "EXEC sp_bindrule '[%s].[%s]', '[%s].[%s]';\nGO\n\n"
+                                    .formatted(schema, ruleName, schema, name);
+
+            String definition = createType + defaultBinding + ruleBinding;
+
+            return new DbObject(schema, name, DbObjectType.SCALAR_TYPE, definition);
         });
 
         logger.debug("Retrieved {} scalar types", scalarTypes.size());
@@ -395,14 +378,14 @@ public class MSSQLDatabaseService implements DatabaseService {
                 ORDER BY schema_name, table_name
                 """;
 
-        List<DbObject> tables = jdbcTemplate.query(tableQuery, (rs, rowNum) -> {
-            String schemaName = rs.getString("schema_name").toLowerCase();
-            String tableName = rs.getString("table_name").toLowerCase();
+        List<DbObject> tables = jdbcTemplate.query(tableQuery, (rs, _) -> {
+            String schema = rs.getString("schema_name").toLowerCase();
+            String table = rs.getString("table_name").toLowerCase();
             int objectId = rs.getInt("object_id");
 
-            String definition = buildCreateTableDefinition(schemaName, tableName, objectId);
+            String definition = buildCreateTableDefinition(schema, table, objectId);
 
-            return new DbObject(schemaName, tableName, DbObjectType.TABLE, definition);
+            return new DbObject(schema, table, DbObjectType.TABLE, definition);
         });
 
         logger.debug("Retrieved {} tables", tables.size());
@@ -418,28 +401,30 @@ public class MSSQLDatabaseService implements DatabaseService {
      * @return Complete CREATE TABLE statement
      */
     private String buildCreateTableDefinition(String schemaName, String tableName, int objectId) {
-        StringBuilder definition = new StringBuilder();
-        definition.append("CREATE TABLE [").append(schemaName).append("].[").append(tableName).append("]\n(\n");
+        List<String> columnDefs = getTableColumns(objectId);
+        String columnsBlock = String.join(",\n    ", columnDefs);
 
-        // Get columns
-        List<String> columnDefinitions = getTableColumns(objectId);
-        definition.append("    ").append(String.join(",\n    ", columnDefinitions));
+        List<String> constraintDefs = getTableConstraints(tableName, objectId);
+        String constraintsBlock = constraintDefs.isEmpty()
+                ? ""
+                : ",\n    " + String.join(",\n    ", constraintDefs);
 
-        // Get constraints (PK, FK, UNIQUE, CHECK)
-        List<String> constraints = getTableConstraints(schemaName, tableName, objectId);
-        if (!constraints.isEmpty()) {
-            definition.append(",\n    ").append(String.join(",\n    ", constraints));
-        }
+        String createTable = """
+            CREATE TABLE [%s].[%s]
+            (
+                %s%s
+            );
+            GO
 
-        definition.append("\n);\nGO\n");
+            """.formatted(schemaName, tableName, columnsBlock, constraintsBlock);
 
-        // Get indexes (non-constraint indexes)
-        List<String> indexes = getTableIndexes(schemaName, tableName, objectId);
-        for (String index : indexes) {
-            definition.append("\n").append(index).append("\nGO");
-        }
+        // Indexes
+        List<String> indexDefs = getTableIndexes(schemaName, tableName, objectId);
+        String indexes = indexDefs.stream()
+                .map(idx -> idx + "\nGO\n")
+                .collect(Collectors.joining());
 
-        return definition.toString();
+        return createTable + indexes;
     }
 
     /**
@@ -466,45 +451,34 @@ public class MSSQLDatabaseService implements DatabaseService {
                 ORDER BY c.column_id
                 """;
 
-        return jdbcTemplate.query(columnQuery, (rs, rowNum) -> {
-            String columnName = rs.getString("column_name");
+        return jdbcTemplate.query(columnQuery, (rs, _) -> {
+            String column = rs.getString("column_name");
             String dataType = rs.getString("data_type");
             int maxLength = rs.getInt("max_length");
             int precision = rs.getInt("precision");
             int scale = rs.getInt("scale");
-            boolean isNullable = rs.getBoolean("is_nullable");
-            boolean isIdentity = rs.getBoolean("is_identity");
+            boolean nullable = rs.getBoolean("is_nullable");
+            boolean identity = rs.getBoolean("is_identity");
             int identitySeed = rs.getInt("identity_seed");
             int identityIncrement = rs.getInt("identity_increment");
             String defaultValue = rs.getString("default_value");
 
-            StringBuilder columnDef = new StringBuilder();
-            columnDef.append("[").append(columnName).append("] ");
-            columnDef.append(formatDataType(dataType, maxLength, precision, scale));
-
-            if (isIdentity) {
-                columnDef.append(" IDENTITY(").append(identitySeed).append(",")
-                        .append(identityIncrement).append(")");
-            }
-
-            if (!isNullable) {
-                columnDef.append(" NOT NULL");
-            } else {
-                columnDef.append(" NULL");
-            }
-
-            if (defaultValue != null && !isIdentity) {
-                columnDef.append(" DEFAULT ").append(defaultValue);
-            }
-
-            return columnDef.toString();
+            return "[" + column + "] " +
+                    formatDataType(dataType, maxLength, precision, scale) +
+                    (identity
+                            ? " IDENTITY(" + identitySeed + "," + identityIncrement + ")"
+                            : "") +
+                    (nullable ? " NULL" : " NOT NULL") +
+                    ((defaultValue != null && !identity)
+                            ? " DEFAULT " + defaultValue
+                            : "");
         }, objectId);
     }
 
     /**
      * Gets constraint definitions for a table (PK, FK, UNIQUE, CHECK).
      */
-    private List<String> getTableConstraints(String schemaName, String tableName, int objectId) {
+    private List<String> getTableConstraints(String tableName, int objectId) {
         List<String> constraints = new ArrayList<>();
 
         // Primary Key
@@ -513,9 +487,9 @@ public class MSSQLDatabaseService implements DatabaseService {
                     kc.name AS constraint_name,
                     STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
                 FROM sys.key_constraints kc
-                JOIN sys.index_columns ic ON kc.parent_object_id = ic.object_id 
+                JOIN sys.index_columns ic ON kc.parent_object_id = ic.object_id
                     AND kc.unique_index_id = ic.index_id
-                JOIN sys.columns c ON ic.object_id = c.object_id 
+                JOIN sys.columns c ON ic.object_id = c.object_id
                     AND ic.column_id = c.column_id
                 WHERE kc.parent_object_id = ? AND kc.type = 'PK'
                 GROUP BY kc.name
@@ -546,9 +520,9 @@ public class MSSQLDatabaseService implements DatabaseService {
                     kc.name AS constraint_name,
                     STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
                 FROM sys.key_constraints kc
-                JOIN sys.index_columns ic ON kc.parent_object_id = ic.object_id 
+                JOIN sys.index_columns ic ON kc.parent_object_id = ic.object_id
                     AND kc.unique_index_id = ic.index_id
-                JOIN sys.columns c ON ic.object_id = c.object_id 
+                JOIN sys.columns c ON ic.object_id = c.object_id
                     AND ic.column_id = c.column_id
                 WHERE kc.parent_object_id = ? AND kc.type = 'UQ'
                 GROUP BY kc.name
@@ -690,12 +664,25 @@ public class MSSQLDatabaseService implements DatabaseService {
             String[] columnArray = columns.split(", ");
             String formattedColumns = Arrays.stream(columnArray)
                     .map(col -> "[" + col + "]")
-                    .reduce((a, b) -> a + ", " + b)
-                    .orElse("");
+                    .collect(Collectors.joining(", "));
 
             String uniqueKeyword = isUnique ? "UNIQUE " : "";
-            indexes.add(String.format("CREATE %sINDEX [%s] ON [%s].[%s] (%s);",
-                    uniqueKeyword, indexName, schemaName, tableName, formattedColumns));
+
+            String typeKeyword = switch (indexType) {
+                case 1 -> "CLUSTERED ";
+                case 2 -> "NONCLUSTERED ";
+                case 5 -> "CLUSTERED COLUMNSTORE ";
+                case 6 -> "NONCLUSTERED COLUMNSTORE ";
+                default -> null;
+            };
+
+            if (typeKeyword == null) {
+                logger.warn("Skipping unsupported index type {} for index [{}] on [{}].[{}]",
+                        indexType, indexName, schemaName, tableName);
+                return;
+            }
+            indexes.add(String.format("CREATE %s%sINDEX [%s] ON [%s].[%s] (%s);",
+                    uniqueKeyword, typeKeyword, indexName, schemaName, tableName, formattedColumns));
         }, objectId);
 
         return indexes;
@@ -722,33 +709,6 @@ public class MSSQLDatabaseService implements DatabaseService {
 
         Integer invalidCount = jdbcTemplate.queryForObject(validationQuery, Integer.class, objectId, indexId);
         return invalidCount != null && invalidCount > 0;
-    }
-
-    /**
-     * Formats a data type with its length, precision, and scale.
-     *
-     * @param dataType The base data type
-     * @param maxLength The maximum length (for string types)
-     * @param precision The precision (for numeric types)
-     * @param scale The scale (for numeric types)
-     * @return Formatted data type string
-     */
-    private String formatDataType(String dataType, int maxLength, int precision, int scale) {
-        return switch (dataType.toLowerCase()) {
-            case "varchar", "char", "varbinary", "binary" -> {
-                int actualLength = maxLength == -1 ? -1 : maxLength;
-                yield dataType + "(" + (actualLength == -1 ? "MAX" : String.valueOf(actualLength)) + ")";
-            }
-            case "nvarchar", "nchar" -> {
-                int actualLength = maxLength == -1 ? -1 : maxLength / 2;
-                yield dataType + "(" + (actualLength == -1 ? "MAX" : String.valueOf(actualLength)) + ")";
-            }
-            case "decimal", "numeric" ->
-                    dataType + "(" + precision + ", " + scale + ")";
-            case "datetime2", "time", "datetimeoffset" ->
-                    scale > 0 ? dataType + "(" + scale + ")" : dataType;
-            default -> dataType;
-        };
     }
 
     /**
@@ -783,7 +743,6 @@ public class MSSQLDatabaseService implements DatabaseService {
      * Applies the actual object changes.
      * For TABLEs: generates ALTER statements to preserve data
      * For other objects: uses DROP and CREATE pattern
-     *
      * Objects are processed in dependency order to ensure referenced objects exist:
      * 1. Tables (base objects)
      * 2. Scalar Types and Table Types
@@ -835,59 +794,54 @@ public class MSSQLDatabaseService implements DatabaseService {
      * @param views List of view objects
      * @return Map of view name to set of views it depends on
      */
-    private java.util.Map<String, java.util.Set<String>> extractViewDependenciesFromSQL(List<DbObject> views) {
-        java.util.Map<String, java.util.Set<String>> dependencies = new java.util.HashMap<>();
+    private Map<String, Set<String>> extractViewDependenciesFromSQL(List<DbObject> views) {
+        Map<String, Set<String>> dependencies = new HashMap<>();
 
-        // Create a map of view names (including schema) for quick lookup
-        java.util.Map<String, DbObject> viewMap = new java.util.HashMap<>();
-        for (DbObject v : views) {
-            viewMap.put(v.schema().toLowerCase() + "." + v.name().toLowerCase(), v);
-            viewMap.put(v.name().toLowerCase(), v); // Also map by name only
-        }
+        // Pre-lowercase names once
+        record ViewKey(DbObject v, String schemaName, String viewName) {}
 
-        for (DbObject view : views) {
-            if (view.definition() == null) {
+        List<ViewKey> viewKeys = views.stream()
+                .map(v -> new ViewKey(v, v.schema().toLowerCase(), v.name().toLowerCase()))
+                .toList();
+
+        for (ViewKey v : viewKeys) {
+            String definition = v.v.definition();
+            if (definition == null) {
                 continue;
             }
 
-            String sql = view.definition().toLowerCase();
-            java.util.Set<String> deps = new java.util.HashSet<>();
+            String sql = definition.toLowerCase();
+            Set<String> deps = new HashSet<>();
 
-            // Look for other views referenced in this view's SQL
-            for (DbObject otherView : views) {
-                if (view.schema().equalsIgnoreCase(otherView.schema()) &&
-                    view.name().equalsIgnoreCase(otherView.name())) {
-                    continue; // Skip self-reference
+            for (ViewKey other : viewKeys) {
+                // skip self
+                if (v.schemaName.equals(other.schemaName) && v.viewName.equals(other.viewName)) {
+                    continue;
                 }
 
-                String otherViewName = otherView.name().toLowerCase();
-                String otherSchemaView = otherView.schema().toLowerCase() + "." + otherViewName;
+                // patterns: [schema].[view] / schema.view
+                String pattern1 = "\\[?" + Pattern.quote(other.schemaName) + "\\]?\\.\\[?" +
+                        Pattern.quote(other.viewName) + "\\]?";
+                // [view] / view (word boundary-ish)
+                String pattern2 = "\\[?" + Pattern.quote(other.viewName) + "\\]?";
 
-                // Use regex patterns to match view references in SQL
-                // Pattern 1: [schema].[viewname] or schema.viewname
-                String pattern1 = "\\[?" + java.util.regex.Pattern.quote(otherView.schema().toLowerCase()) + "\\]?\\.\\[?" +
-                                 java.util.regex.Pattern.quote(otherViewName) + "\\]?";
-
-                // Pattern 2: [viewname] or just viewname (with word boundaries)
-                String pattern2 = "\\[?" + java.util.regex.Pattern.quote(otherViewName) + "\\]?";
-
-                // Check if referenced in FROM or JOIN clauses
-                String fromJoinPattern = "(?:from|join)\\s+" + pattern1;
+                String fromJoinPattern1 = "(?:from|join)\\s+" + pattern1;
                 String fromJoinPattern2 = "(?:from|join)\\s+" + pattern2;
 
-                if (java.util.regex.Pattern.compile(fromJoinPattern, java.util.regex.Pattern.CASE_INSENSITIVE).matcher(sql).find() ||
-                    java.util.regex.Pattern.compile(fromJoinPattern2, java.util.regex.Pattern.CASE_INSENSITIVE).matcher(sql).find()) {
+                Pattern p1 = Pattern.compile(fromJoinPattern1, Pattern.CASE_INSENSITIVE);
+                Pattern p2 = Pattern.compile(fromJoinPattern2, Pattern.CASE_INSENSITIVE);
 
-                    String depKey = otherView.schema().toLowerCase() + "." + otherView.name().toLowerCase();
+                if (p1.matcher(sql).find() || p2.matcher(sql).find()) {
+                    String depKey = other.schemaName + "." + other.viewName;
                     deps.add(depKey);
 
                     logger.debug("View {}.{} depends on {}.{}",
-                               view.schema(), view.name(), otherView.schema(), otherView.name());
+                            v.v.schema(), v.v.name(), other.v.schema(), other.v.name());
                 }
             }
 
             if (!deps.isEmpty()) {
-                String viewKey = view.schema().toLowerCase() + "." + view.name().toLowerCase();
+                String viewKey = v.schemaName + "." + v.viewName;
                 dependencies.put(viewKey, deps);
             }
         }
@@ -905,13 +859,13 @@ public class MSSQLDatabaseService implements DatabaseService {
      * @return List of views sorted by dependency order
      */
     private List<DbObject> sortViewsByDependency(List<DbObject> views,
-                                                   java.util.Map<String, java.util.Set<String>> dependencies) {
+                                                 Map<String, Set<String>> dependencies) {
         List<DbObject> sorted = new ArrayList<>();
-        java.util.Set<String> visited = new java.util.HashSet<>();
-        java.util.Set<String> visiting = new java.util.HashSet<>();
+        Set<String> visited = new HashSet<>();
+        Set<String> visiting = new HashSet<>();
 
         // Create a map for quick lookup by schema.name
-        java.util.Map<String, DbObject> viewMap = new java.util.HashMap<>();
+        Map<String, DbObject> viewMap = new HashMap<>();
         for (DbObject view : views) {
             String key = view.schema().toLowerCase() + "." + view.name().toLowerCase();
             viewMap.put(key, view);
@@ -932,10 +886,10 @@ public class MSSQLDatabaseService implements DatabaseService {
      * Performs topological sort for views using DFS with cycle detection.
      */
     private void topologicalSortViews(DbObject view,
-                                      java.util.Map<String, DbObject> viewMap,
-                                      java.util.Map<String, java.util.Set<String>> dependencies,
-                                      java.util.Set<String> visited,
-                                      java.util.Set<String> visiting,
+                                      Map<String, DbObject> viewMap,
+                                      Map<String, Set<String>> dependencies,
+                                      Set<String> visited,
+                                      Set<String> visiting,
                                       List<DbObject> sorted) {
         String viewKey = view.schema().toLowerCase() + "." + view.name().toLowerCase();
 
@@ -952,7 +906,7 @@ public class MSSQLDatabaseService implements DatabaseService {
         visiting.add(viewKey);
 
         // Visit dependencies first (views this view depends on)
-        java.util.Set<String> deps = dependencies.get(viewKey);
+        Set<String> deps = dependencies.get(viewKey);
         if (deps != null) {
             for (String depKey : deps) {
                 // Find the view object for this dependency
@@ -976,7 +930,6 @@ public class MSSQLDatabaseService implements DatabaseService {
 
     /**
      * Orders database objects by dependency to ensure objects are created before they are referenced.
-     *
      * Dependency order:
      * 1. Tables without foreign keys (base tables)
      * 2. Tables with foreign keys (ordered by their dependencies)
@@ -1017,7 +970,7 @@ public class MSSQLDatabaseService implements DatabaseService {
         // Order views by their inter-view dependencies
         if (!views.isEmpty()) {
             logger.info("Analyzing view dependencies for {} views...", views.size());
-            java.util.Map<String, java.util.Set<String>> viewDependencies = extractViewDependenciesFromSQL(views);
+            Map<String, Set<String>> viewDependencies = extractViewDependenciesFromSQL(views);
 
             if (!viewDependencies.isEmpty()) {
                 logger.info("Found dependencies for {} views", viewDependencies.size());
@@ -1055,8 +1008,8 @@ public class MSSQLDatabaseService implements DatabaseService {
      */
     private List<DbObject> orderTablesByForeignKeys(List<DbObject> tables) {
         // Build dependency map: table -> list of tables it depends on (via FK)
-        java.util.Map<String, List<String>> dependencies = new java.util.HashMap<>();
-        java.util.Map<String, DbObject> tableMap = new java.util.HashMap<>();
+        Map<String, List<String>> dependencies = new HashMap<>();
+        Map<String, DbObject> tableMap = new HashMap<>();
 
         for (DbObject table : tables) {
             String tableKey = table.schema() + "." + table.name();
@@ -1066,8 +1019,8 @@ public class MSSQLDatabaseService implements DatabaseService {
 
         // Topological sort
         List<DbObject> ordered = new ArrayList<>();
-        java.util.Set<String> visited = new java.util.HashSet<>();
-        java.util.Set<String> visiting = new java.util.HashSet<>();
+        Set<String> visited = new HashSet<>();
+        Set<String> visiting = new HashSet<>();
 
         for (String tableKey : tableMap.keySet()) {
             if (!visited.contains(tableKey)) {
@@ -1115,54 +1068,15 @@ public class MSSQLDatabaseService implements DatabaseService {
     }
 
     /**
-     * Extracts view dependencies from a view definition.
-     * Views can reference other views, and this method finds those references.
-     *
-     * @param view The view object
-     * @return List of referenced views in format "schema.view"
-     */
-    private List<String> extractViewDependencies(DbObject view) {
-        if (view.definition() == null) {
-            return List.of();
-        }
-
-        List<String> dependencies = new ArrayList<>();
-        String definition = view.definition().toUpperCase();
-
-        // Match: SELECT ... FROM [schema].[view] or [view]
-        // Pattern: FROM followed by schema.view or just view
-        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
-            "FROM\\s+(?:\\[(\\w+)\\]\\.)?\\[(\\w+)\\]",
-            java.util.regex.Pattern.CASE_INSENSITIVE
-        );
-
-        java.util.regex.Matcher matcher = pattern.matcher(definition);
-        while (matcher.find()) {
-            String schema = matcher.group(1);
-            String viewName = matcher.group(2);
-
-            // If schema not specified, assume dbo
-            if (schema == null) {
-                schema = "dbo";
-            }
-
-            String referencedView = schema.toLowerCase() + "." + viewName.toLowerCase();
-            dependencies.add(referencedView);
-        }
-
-        return dependencies;
-    }
-
-    /**
      * Performs topological sort to order tables by dependencies.
      * Uses DFS with cycle detection.
      */
     private void topologicalSort(
             String tableKey,
-            java.util.Map<String, List<String>> dependencies,
-            java.util.Map<String, DbObject> tableMap,
-            java.util.Set<String> visited,
-            java.util.Set<String> visiting,
+            Map<String, List<String>> dependencies,
+            Map<String, DbObject> tableMap,
+            Set<String> visited,
+            Set<String> visiting,
             List<DbObject> ordered) {
 
         if (visited.contains(tableKey)) {
@@ -1284,7 +1198,7 @@ public class MSSQLDatabaseService implements DatabaseService {
      */
     private List<DbObject> getFullTextCatalogs() {
         String catalogQuery = """
-                SELECT 
+                SELECT
                     name,
                     is_default,
                     is_accent_sensitivity_on
@@ -1293,7 +1207,7 @@ public class MSSQLDatabaseService implements DatabaseService {
                 ORDER BY name
                 """;
 
-        return jdbcTemplate.query(catalogQuery, (rs, rowNum) -> {
+        return jdbcTemplate.query(catalogQuery, (rs, _) -> {
             String name = rs.getString("name");
             boolean isDefault = rs.getBoolean("is_default");
             boolean isAccentSensitive = rs.getBoolean("is_accent_sensitivity_on");
@@ -1342,13 +1256,5 @@ public class MSSQLDatabaseService implements DatabaseService {
             DROP %s IF EXISTS [%s].[%s];
             GO
             """.formatted(dropKeyword, obj.schema(), obj.name());
-    }
-
-    /**
-     * Converts a string to a Spring Resource for use with ResourceDatabasePopulator.
-     */
-    private Resource toResource(String content) {
-        return new InputStreamResource(
-                new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8)));
     }
 }
