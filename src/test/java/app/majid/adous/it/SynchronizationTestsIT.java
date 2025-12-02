@@ -9,6 +9,7 @@ import app.majid.adous.synchronizer.model.DbObjectType;
 import app.majid.adous.synchronizer.model.RepoObject;
 import app.majid.adous.synchronizer.model.SyncResult;
 import app.majid.adous.synchronizer.service.DatabaseRepositorySynchronizerService;
+import app.majid.adous.synchronizer.service.SqlEquivalenceCheckerService;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
@@ -42,6 +43,9 @@ class SynchronizationTestsIT {
 
     @Autowired
     DatabaseService databaseService;
+
+    @Autowired
+    SqlEquivalenceCheckerService sqlEquivalenceCheckerService;
 
     @Test
     void testSynchronizerService() throws Exception {
@@ -385,14 +389,14 @@ class SynchronizationTestsIT {
         var actualDryRunResponse = synchronizerService.syncDbToRepo("db2", true);
 
         var expectedResponse = "[RepoObject[path=diff/test-prefix/db2/PROCEDURE/dbo/proc2.sql]]";
-        assertEquals(normalizeLineEndings(expectedResponse), normalizeLineEndings(actualDryRunResponse));
+        assertEquals(normalize(expectedResponse), normalize(actualDryRunResponse));
         assertTrue(gitService.getFileContentAtRef(Constants.HEAD, "diff/test-prefix/db2/PROCEDURE/dbo/proc2.sql").isEmpty());
 
         // Dryrun set to false
         var actualResponse = synchronizerService.syncDbToRepo("db2", false);
-        assertEquals(normalizeLineEndings(expectedResponse), normalizeLineEndings(actualResponse));
+        assertEquals(normalize(expectedResponse), normalize(actualResponse));
         var proc2InDb2Diff = gitService.getFileContentAtRef(Constants.HEAD, "diff/test-prefix/db2/PROCEDURE/dbo/proc2.sql").get();
-        assertEquals(normalizeLineEndings(proc2Def), normalizeLineEndings(proc2InDb2Diff));
+        assertEquals(normalize(proc2Def), normalize(proc2InDb2Diff));
 
         // Already synced, so no changes
         var noChangeResponse = synchronizerService.syncDbToRepo("db2", false);
@@ -411,7 +415,7 @@ class SynchronizationTestsIT {
                         o.name().equals(expectedObject.name()) &&
                                 o.schema().equals(expectedObject.schema()) &&
                                 o.type() == expectedObject.type() &&
-                                normalizeLineEndings(o.definition()).equals(normalizeLineEndings(expectedObject.definition()))),
+                                normalize(o.definition()).equals(normalize(expectedObject.definition()))),
                 "Expected object not found in database %s: %s".formatted(dbName, expectedObject));
     }
 
@@ -438,15 +442,15 @@ class SynchronizationTestsIT {
     }
 
     private Executable assertFileContent(Pair<String, String> fileContent) {
-        String expected = normalizeLineEndings(fileContent.getSecond());
+        String expected = normalize(fileContent.getSecond());
         String actual = gitService.getFileContentAtRef("HEAD", fileContent.getFirst())
-                .map(this::normalizeLineEndings).orElse(null);
+                .map(this::normalize).orElse(null);
 
         return () -> assertEquals(expected, actual,
                 "Content mismatch for file: %s, actual: %s".formatted(fileContent.getFirst(), actual));
     }
 
-    private String normalizeLineEndings(String input) {
-        return input.replace("\r\n", "\n").replace("\r", "\n");
+    private String normalize(String input) {
+        return sqlEquivalenceCheckerService.normalizeSql(input);
     }
 }

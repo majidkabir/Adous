@@ -10,6 +10,8 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static app.majid.adous.db.service.SqlServerTypeFormatter.formatDataType;
+
 /**
  * Generates ALTER TABLE scripts by comparing Git CREATE TABLE definition
  * with current database table structure.
@@ -72,7 +74,7 @@ public class TableAlterScriptGenerator {
      */
     private boolean tableExists(String schema, String name) {
         String query = """
-                SELECT COUNT(*) 
+                SELECT COUNT(*)
                 FROM sys.tables t
                 JOIN sys.schemas s ON t.schema_id = s.schema_id
                 WHERE s.name = ? AND t.name = ?
@@ -105,7 +107,17 @@ public class TableAlterScriptGenerator {
             column.name = columnName;
             column.dataType = normalizeDataType(dataType);
             column.isNullable = isNullable;
-            column.isIdentity = (identity != null);
+            if (matcher.group(0).toUpperCase().contains("IDENTITY")) {
+                column.isIdentity = true;
+                if (identity != null) {
+                    String[] parts = identity.split(",");
+                    column.identitySeed = Integer.parseInt(parts[0].trim());
+                    column.identityIncrement = Integer.parseInt(parts[1].trim());
+                } else {
+                    column.identitySeed = 1;
+                    column.identityIncrement = 1;
+                }
+            }
 
             def.columns.put(columnName, column);
         }
@@ -136,6 +148,7 @@ public class TableAlterScriptGenerator {
         // Get columns
         String columnQuery = """
                 SELECT
+                    c.column_id,
                     c.name AS column_name,
                     TYPE_NAME(c.user_type_id) AS data_type,
                     c.max_length,
@@ -143,8 +156,10 @@ public class TableAlterScriptGenerator {
                     c.scale,
                     c.is_nullable,
                     c.is_identity,
-                    c.column_id
+                    ISNULL(ic.seed_value, 0) AS identity_seed,
+                    ISNULL(ic.increment_value, 0) AS identity_increment
                 FROM sys.columns c
+                LEFT JOIN sys.identity_columns ic ON c.object_id = ic.object_id AND c.column_id = ic.column_id
                 JOIN sys.tables t ON c.object_id = t.object_id
                 JOIN sys.schemas s ON t.schema_id = s.schema_id
                 WHERE s.name = ? AND t.name = ?
@@ -162,6 +177,8 @@ public class TableAlterScriptGenerator {
             );
             column.isNullable = rs.getBoolean("is_nullable");
             column.isIdentity = rs.getBoolean("is_identity");
+            column.identitySeed = rs.getInt("identity_seed");
+            column.identityIncrement = rs.getInt("identity_increment");
             column.columnId = rs.getInt("column_id");
 
             def.columns.put(column.name, column);
@@ -173,9 +190,9 @@ public class TableAlterScriptGenerator {
                     kc.name AS constraint_name,
                     c.name AS column_name
                 FROM sys.key_constraints kc
-                JOIN sys.index_columns ic ON kc.parent_object_id = ic.object_id 
+                JOIN sys.index_columns ic ON kc.parent_object_id = ic.object_id
                     AND kc.unique_index_id = ic.index_id
-                JOIN sys.columns c ON ic.object_id = c.object_id 
+                JOIN sys.columns c ON ic.object_id = c.object_id
                     AND ic.column_id = c.column_id
                 JOIN sys.tables t ON kc.parent_object_id = t.object_id
                 JOIN sys.schemas s ON t.schema_id = s.schema_id
@@ -274,27 +291,6 @@ public class TableAlterScriptGenerator {
     }
 
     /**
-     * Formats a data type with its length, precision, and scale.
-     */
-    private String formatDataType(String dataType, int maxLength, int precision, int scale) {
-        return switch (dataType.toLowerCase()) {
-            case "varchar", "char", "varbinary", "binary" -> {
-                int actualLength = maxLength == -1 ? -1 : maxLength;
-                yield dataType + "(" + (actualLength == -1 ? "MAX" : String.valueOf(actualLength)) + ")";
-            }
-            case "nvarchar", "nchar" -> {
-                int actualLength = maxLength == -1 ? -1 : maxLength / 2;
-                yield dataType + "(" + (actualLength == -1 ? "MAX" : String.valueOf(actualLength)) + ")";
-            }
-            case "decimal", "numeric" ->
-                    dataType + "(" + precision + ", " + scale + ")";
-            case "datetime2", "time", "datetimeoffset" ->
-                    scale > 0 ? dataType + "(" + scale + ")" : dataType;
-            default -> dataType;
-        };
-    }
-
-    /**
      * Normalizes data type string for comparison.
      */
     private String normalizeDataType(String dataType) {
@@ -319,6 +315,8 @@ public class TableAlterScriptGenerator {
         String dataType;
         boolean isNullable;
         boolean isIdentity;
+        int identitySeed;
+        int identityIncrement;
         int columnId;
     }
 }
