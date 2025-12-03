@@ -4,6 +4,9 @@ FROM eclipse-temurin:25-jdk-alpine AS builder
 
 WORKDIR /app
 
+# Install bash (required by gradlew)
+RUN apk add --no-cache bash
+
 # Copy Gradle wrapper and build files
 COPY gradlew .
 COPY gradle gradle
@@ -14,7 +17,7 @@ COPY settings.gradle .
 COPY src src
 
 # Make gradlew executable and build the application
-RUN chmod +x gradlew && ./gradlew clean build -x test
+RUN chmod +x gradlew && ./gradlew clean build -x test --no-daemon --stacktrace
 
 # Stage 2: Create the runtime image
 FROM eclipse-temurin:25-jre-alpine
