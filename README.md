@@ -1,7 +1,7 @@
 # Adous
 
 [![Build & Test](https://github.com/majidkabir/Adous/actions/workflows/build-test.yaml/badge.svg)](https://github.com/majidkabir/Adous/actions/workflows/build-test.yaml)
-[![Docker Image](https://ghcr-badge.deta.dev/majidkabir/adous/latest_tag?label=Docker&color=blue)](https://github.com/majidkabir/Adous/pkgs/container/adous)
+[![Docker Image Version](https://ghcr-badge.egpl.dev/majidkabir/adous/latest_tag?label=Docker&color=blue)](https://ghcr.io/majidkabir/adous)
 [![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://adoptium.net/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 

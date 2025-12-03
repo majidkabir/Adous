@@ -3,11 +3,8 @@ name: Build & push image
 on:
   pull_request:
   push:
-    branches:
-      - main
-#  push:
-#    branches: [ main ]
-#    tags: [ 'v*' ]
+    branches: [ main ]
+    tags: [ 'v*' ]
 
 jobs:
   docker:
