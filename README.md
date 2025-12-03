@@ -1,6 +1,21 @@
 # Adous
 
+[![Build & Test](https://github.com/OWNER/Adous/actions/workflows/build-test.yaml/badge.svg)](https://github.com/OWNER/Adous/actions/workflows/build-test.yaml)
+[![Docker Image](https://ghcr-badge.deta.dev/owner/adous/latest_tag?label=Docker&color=blue)](https://github.com/OWNER/Adous/pkgs/container/adous)
+[![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://adoptium.net/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+> **Database as Code for SQL Server** – Synchronize SQL Server schemas with Git through bidirectional, dependency-aware synchronization. Export canonical DDL to version control and apply changes deterministically with intelligent ordering and safe table evolution.
+
 **Adous** is a Spring Boot service for managing and synchronizing multiple database instances with a Git repository. It enables version control for database objects (stored procedures, functions, views, triggers, tables, synonyms, sequences, user-defined types) and provides bidirectional synchronization between databases and Git.
+
+## 📚 Documentation
+
+- **[Quick Start Guide](examples/workflow.md)** - Step-by-step tutorial
+- **[Architecture](docs/architecture.md)** - How Adous works internally
+- **[Usage Guide](docs/usage.md)** - API reference and examples
+- **[Contributing](docs/CONTRIBUTING.md)** - How to contribute
+- **[Examples](examples/)** - Sample configurations and schemas
 
 ## Features
 
@@ -37,13 +52,6 @@
 - **Testcontainers**: Integration testing with real database instances
 
 ## Getting Started
-
-### Prerequisites
-
-- Java 25 or higher
-- Gradle
-- SQL Server database(s)
-- Git repository (local or remote)
 
 ### Configuration
 
@@ -313,6 +321,53 @@ The application exports metrics including:
 
 When running in Docker, the container includes a health check that polls the actuator health endpoint every 30 seconds.
 
+## Versioning & Releases
+
+Adous follows [Semantic Versioning](https://semver.org/) (SemVer):
+
+- **MAJOR.MINOR.PATCH** (e.g., `1.2.3`)
+  - **MAJOR**: Breaking changes
+  - **MINOR**: New features (backward-compatible)
+  - **PATCH**: Bug fixes (backward-compatible)
+
+### Release Tags
+
+Git tags mark stable releases:
+
+```bash
+# List all releases
+git tag --list "v*"
+
+# Check out a specific version
+git checkout v1.0.0
+```
+
+### Docker Images
+
+Docker images are published to GitHub Container Registry with multiple tags:
+
+- `ghcr.io/owner/adous:latest` - Latest build from main branch
+- `ghcr.io/owner/adous:0.0.1-SNAPSHOT` - Specific version from build.gradle
+- `ghcr.io/owner/adous:abc123def456` - Specific commit SHA (short)
+- `ghcr.io/owner/adous:v1.0.0` - Specific release tag
+
+**Use specific version tags in production** for reproducibility.
+
+### Database Sync Tagging
+
+Each database sync creates a Git tag:
+
+```
+{databaseName}/{timestamp}
+```
+
+Example: `production-db/20231205-143022`
+
+This tracks which commit each database is synced to, enabling:
+- Out-of-sync detection
+- Rollback capability
+- Audit trail
+
 ## Best Practices
 
 1. **Always use dry-run first**: Preview changes before applying
@@ -347,11 +402,30 @@ The workflow ensures code quality and test coverage on every change.
 
 ## Contributing
 
-1. Follow Java and Spring Boot best practices
-2. Add appropriate logging
-3. Write unit and integration tests
-4. Update documentation
+We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for detailed guidelines.
+
+**Quick Start for Contributors:**
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Make your changes following our coding standards
+4. Add tests for new functionality
+5. Run tests: `./gradlew test`
+6. Commit with descriptive messages (Conventional Commits format)
+7. Push and create a Pull Request
+
+**Before contributing:**
+- Read the [Code of Conduct](docs/CODE_OF_CONDUCT.md)
+- Check existing issues and PRs
+- Use issue templates for bugs and feature requests
+- Follow the PR template checklist
+
+## Community
+
+- **Issues**: [Report bugs](https://github.com/OWNER/Adous/issues/new?template=bug_report.md) or [request features](https://github.com/OWNER/Adous/issues/new?template=feature_request.md)
+- **Discussions**: Ask questions and share ideas
+- **Documentation**: Help improve docs in [docs/](docs/) directory
 
 ## License
 
-See LICENSE file for details.
+See [LICENSE](LICENSE) file for details.

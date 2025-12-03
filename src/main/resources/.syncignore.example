@@ -1,0 +1,48 @@
+# Adous Sync Ignore Patterns
+#
+# Copy this file to .syncignore to activate patterns.
+# Glob syntax: * (any chars), ** (including /), ? (single char)
+
+# TEMPORARY OBJECTS
+**/PROCEDURE/*/temp_*.sql
+**/FUNCTION/*/temp_*.sql
+**/VIEW/*/temp_*.sql
+**/TABLE/*/temp_*.sql
+**/*/tmp_*.sql
+
+# INTERNAL/SYSTEM OBJECTS
+**/VIEW/dbo/internal_*.sql
+**/VIEW/*/sys_*.sql
+**/PROCEDURE/dbo/sp_*.sql
+**/PROCEDURE/dbo/xp_*.sql
+
+# SCHEMA-SPECIFIC EXCLUSIONS
+**/TABLE/staging/*
+**/VIEW/staging/*
+**/PROCEDURE/staging/*
+**/FUNCTION/staging/*
+**/*/archive/*
+**/*/test/*
+
+# PATTERN-BASED EXCLUSIONS
+**/*backup*.sql
+**/*_old.sql
+**/*_deprecated.sql
+**/*_v[0-9]*.sql
+
+# DEVELOPMENT/DEBUGGING
+**/PROCEDURE/*/debug_*.sql
+**/PROCEDURE/*/test_*.sql
+**/VIEW/*/dev_*.sql
+
+# ENVIRONMENT-SPECIFIC
+**/*/local_*.sql
+**/*/prod_*.sql
+**/*/dev_*.sql
+**/*/qa_*.sql
+
+# NOTES:
+# - Test with dryRun=true first
+# - Patterns are case-sensitive
+# - To activate: copy to src/main/resources/.syncignore
+# - Or set github.sync-ignore-file in application.yml
