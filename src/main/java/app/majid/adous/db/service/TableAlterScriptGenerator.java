@@ -229,6 +229,16 @@ public class TableAlterScriptGenerator {
         // Drop columns that exist in DB but not in Git
         for (String columnName : dbDef.columns.keySet()) {
             if (!gitDef.columns.containsKey(columnName)) {
+                // Before dropping column, drop all constraints that depend on it
+                List<String> dependentConstraints = getConstraintsDependentOnColumn(schema, name, columnName);
+                for (String constraintName : dependentConstraints) {
+                    statements.add(String.format(
+                            "ALTER TABLE [%s].[%s] DROP CONSTRAINT [%s];",
+                            schema, name, constraintName
+                    ));
+                    logger.debug("Dropping constraint [{}] before dropping column [{}]", constraintName, columnName);
+                }
+
                 statements.add(String.format(
                         "ALTER TABLE [%s].[%s] DROP COLUMN [%s];",
                         schema, name, columnName
@@ -296,6 +306,85 @@ public class TableAlterScriptGenerator {
     private String normalizeDataType(String dataType) {
         return dataType.trim().toLowerCase()
                 .replaceAll("\\s+", " ");
+    }
+
+    /**
+     * Gets all constraints (CHECK, DEFAULT, FOREIGN KEY) that depend on a specific column.
+     * These must be dropped before the column can be dropped.
+     *
+     * @param schema Schema name
+     * @param tableName Table name
+     * @param columnName Column name
+     * @return List of constraint names that depend on the column
+     */
+    private List<String> getConstraintsDependentOnColumn(String schema, String tableName, String columnName) {
+        List<String> constraints = new ArrayList<>();
+
+        // Query for CHECK constraints on this column
+        String checkConstraintQuery = """
+                SELECT cc.name AS constraint_name, cc.definition
+                FROM sys.check_constraints cc
+                JOIN sys.tables t ON cc.parent_object_id = t.object_id
+                JOIN sys.schemas s ON t.schema_id = s.schema_id
+                WHERE s.name = ? AND t.name = ?
+                """;
+
+        jdbcTemplate.query(checkConstraintQuery, rs -> {
+            String constraintName = rs.getString("constraint_name");
+            String definition = rs.getString("definition");
+
+            // Check if column is referenced in the constraint definition
+            if (definition != null) {
+                String lowerDef = definition.toLowerCase();
+                String lowerCol = columnName.toLowerCase();
+
+                // Check for [columnName] pattern or columnName as a word
+                if (lowerDef.contains("[" + lowerCol + "]") ||
+                    lowerDef.matches(".*\\b" + Pattern.quote(lowerCol) + "\\b.*")) {
+                    constraints.add(constraintName);
+                    logger.debug("Found CHECK constraint [{}] on column [{}]: {}",
+                        constraintName, columnName, definition);
+                }
+            }
+        }, schema, tableName);
+
+        // Query for DEFAULT constraints on this column
+        String defaultConstraintQuery = """
+                SELECT dc.name AS constraint_name
+                FROM sys.default_constraints dc
+                JOIN sys.columns c ON dc.parent_object_id = c.object_id 
+                    AND dc.parent_column_id = c.column_id
+                JOIN sys.tables t ON dc.parent_object_id = t.object_id
+                JOIN sys.schemas s ON t.schema_id = s.schema_id
+                WHERE s.name = ? AND t.name = ? AND c.name = ?
+                """;
+
+        jdbcTemplate.query(defaultConstraintQuery, rs -> {
+            constraints.add(rs.getString("constraint_name"));
+        }, schema, tableName, columnName);
+
+        // Query for FOREIGN KEY constraints where this column is part of the FK
+        String foreignKeyConstraintQuery = """
+                SELECT fk.name AS constraint_name
+                FROM sys.foreign_keys fk
+                JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+                JOIN sys.columns c ON fkc.parent_object_id = c.object_id 
+                    AND fkc.parent_column_id = c.column_id
+                JOIN sys.tables t ON fk.parent_object_id = t.object_id
+                JOIN sys.schemas s ON t.schema_id = s.schema_id
+                WHERE s.name = ? AND t.name = ? AND c.name = ?
+                """;
+
+        jdbcTemplate.query(foreignKeyConstraintQuery, rs -> {
+            constraints.add(rs.getString("constraint_name"));
+        }, schema, tableName, columnName);
+
+        if (!constraints.isEmpty()) {
+            logger.debug("Found {} constraints dependent on column [{}].[{}].[{}]: {}",
+                    constraints.size(), schema, tableName, columnName, constraints);
+        }
+
+        return constraints;
     }
 
     /**
