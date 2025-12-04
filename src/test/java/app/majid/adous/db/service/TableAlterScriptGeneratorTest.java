@@ -662,6 +662,140 @@ class TableAlterScriptGeneratorTest {
             // Assert - Should recognize columns are the same (case-insensitive match)
             assertEquals("", alterScript, "Should handle case-insensitive column matching");
         }
+
+        @Test
+        @DisplayName("Should drop CHECK constraints before dropping column")
+        void shouldDropCheckConstraintsBeforeDroppingColumn() {
+            // Arrange - Create table with column that has CHECK constraint (like price >= 0)
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_products (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        name NVARCHAR(200) NOT NULL,
+                        price DECIMAL(10,2) NOT NULL,
+                        stock_quantity INT NOT NULL DEFAULT 0,
+                        CONSTRAINT PK_test_products PRIMARY KEY (id),
+                        CONSTRAINT CK_Products_Price CHECK (price >= 0),
+                        CONSTRAINT CK_Products_Stock CHECK (stock_quantity >= 0)
+                    )
+                    """);
+
+            // Insert test data
+            jdbcTemplate.execute("INSERT INTO dbo.test_products (name, price, stock_quantity) VALUES ('Product 1', 99.99, 10)");
+
+            // Git definition without price column (price column removed)
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_products]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [name] nvarchar(200) NOT NULL,
+                        [stock_quantity] int NOT NULL,
+                        CONSTRAINT [PK_test_products] PRIMARY KEY ([id]),
+                        CONSTRAINT [CK_Products_Stock] CHECK ([stock_quantity] >= 0)
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_products", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Debug - print the script to see what's generated
+            System.out.println("=== Generated ALTER Script ===");
+            System.out.println(alterScript);
+            System.out.println("=== End ALTER Script ===");
+
+            // Assert - Script should drop constraint before dropping column
+            assertNotNull(alterScript);
+            assertTrue(alterScript.contains("DROP CONSTRAINT"),
+                "Should contain DROP CONSTRAINT statement for CK_Products_Price. Actual script:\n" + alterScript);
+            assertTrue(alterScript.contains("DROP COLUMN [price]"),
+                "Should contain DROP COLUMN statement");
+
+            // Verify constraint is dropped before column
+            int constraintDropIndex = alterScript.indexOf("DROP CONSTRAINT");
+            int columnDropIndex = alterScript.indexOf("DROP COLUMN [price]");
+            assertTrue(constraintDropIndex < columnDropIndex,
+                "Constraint must be dropped before the column");
+
+            // Act - Execute the script to verify it works
+            String[] statements = alterScript.split("GO");
+            for (String stmt : statements) {
+                if (!stmt.trim().isEmpty()) {
+                    jdbcTemplate.execute(stmt.trim());
+                }
+            }
+
+            // Assert - Verify column was dropped and data preserved
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM dbo.test_products",
+                    Integer.class
+            );
+            assertEquals(1, count, "Row should still exist");
+
+            // Verify price column is gone
+            Integer priceColumnCount = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*) FROM sys.columns c
+                    JOIN sys.tables t ON c.object_id = t.object_id
+                    WHERE t.name = 'test_products' AND c.name = 'price'
+                    """, Integer.class);
+            assertEquals(0, priceColumnCount, "Price column should be dropped");
+
+            // Verify stock_quantity column and its constraint still exist
+            Integer stockColumnCount = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*) FROM sys.columns c
+                    JOIN sys.tables t ON c.object_id = t.object_id
+                    WHERE t.name = 'test_products' AND c.name = 'stock_quantity'
+                    """, Integer.class);
+            assertEquals(1, stockColumnCount, "Stock_quantity column should still exist");
+        }
+
+        @Test
+        @DisplayName("Should drop DEFAULT constraints before dropping column")
+        void shouldDropDefaultConstraintsBeforeDroppingColumn() {
+            // Arrange - Create table with column that has DEFAULT constraint
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(100) NOT NULL,
+                        created_date DATETIME NOT NULL DEFAULT GETDATE(),
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            // Git definition without created_date column
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_users]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [username] nvarchar(100) NOT NULL,
+                        CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            DbObject tableObject = new DbObject("dbo", "test_users", DbObjectType.TABLE, gitDefinition);
+
+            // Act
+            String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+
+            // Assert and Execute
+            assertNotNull(alterScript);
+            String[] statements = alterScript.split("GO");
+            for (String stmt : statements) {
+                if (!stmt.trim().isEmpty()) {
+                    jdbcTemplate.execute(stmt.trim());
+                }
+            }
+
+            // Verify column was dropped
+            Integer columnCount = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*) FROM sys.columns c
+                    JOIN sys.tables t ON c.object_id = t.object_id
+                    WHERE t.name = 'test_users' AND c.name = 'created_date'
+                    """, Integer.class);
+            assertEquals(0, columnCount, "Created_date column should be dropped");
+        }
     }
 }
 
