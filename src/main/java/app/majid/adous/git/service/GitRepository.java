@@ -1,8 +1,14 @@
 package app.majid.adous.git.service;
 
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.errors.ConcurrentRefUpdateException;
+import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.api.errors.InvalidTagNameException;
+import org.eclipse.jgit.api.errors.NoHeadException;
 import org.eclipse.jgit.lib.*;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.treewalk.TreeWalk;
 import org.eclipse.jgit.treewalk.filter.PathFilter;
 import org.springframework.stereotype.Component;
@@ -109,17 +115,22 @@ public class GitRepository {
     }
 
     // Add tag to a specified commit
-    public void addTagToCommit(String tagName, String commitish) throws IOException {
+    public RefSpec addTagToCommit(String tagName, String commitish) throws IOException {
         ObjectId commitId = repo.resolve(commitish);
         if (commitId == null) {
             throw new IOException("Commit " + commitish + " not found.");
         }
-        RefUpdate refUpdate = repo.updateRef(Constants.R_TAGS + tagName);
+
+        String refName = Constants.R_TAGS + tagName;
+
+        RefUpdate refUpdate = repo.updateRef(refName);
         refUpdate.setNewObjectId(commitId);
-        refUpdate.setForceUpdate(true);
-        RefUpdate.Result result = refUpdate.update();
+        RefUpdate.Result result = refUpdate.forceUpdate();
+
         if (result != RefUpdate.Result.NEW && result != RefUpdate.Result.FORCED && result != RefUpdate.Result.NO_CHANGE) {
             throw new IOException("Failed to create tag " + tagName + ": " + result.name());
         }
+
+        return new RefSpec("+" + refName + ":" + refName);
     }
 }

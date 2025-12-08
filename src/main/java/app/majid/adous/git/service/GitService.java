@@ -8,6 +8,7 @@ import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.transport.RefSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -110,10 +111,11 @@ public class GitService {
     }
 
     public void addTags(List<String> tags, String commitish) throws IOException, GitAPIException {
+        List<RefSpec> refSpecs = new ArrayList<>();
         for (String tag : tags) {
-            gitRepository.addTagToCommit(tag, commitish);
+            refSpecs.add(gitRepository.addTagToCommit(tag, commitish));
         }
-        remoteService.push(commitish);
+        remoteService.pushTags(refSpecs);
     }
 
     public void syncRemote() throws GitAPIException {

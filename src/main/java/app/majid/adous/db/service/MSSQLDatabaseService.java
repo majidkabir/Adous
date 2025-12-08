@@ -676,9 +676,11 @@ public class MSSQLDatabaseService implements DatabaseService {
                     uniqueKeyword, indexName, schemaName, tableName, formattedColumns);
 
             // Add WHERE clause if it exists (filtered index)
+            // SQL Server's filter_definition does not include the WHERE keyword, so we must add it
             if (filterDefinition != null && !filterDefinition.trim().isEmpty()) {
-                indexDefinition += " " + filterDefinition;
-                logger.debug("Index [{}] has filter: {}", indexName, filterDefinition);
+                String normalizedFilter = normalizeFilterDefinition(filterDefinition);
+                indexDefinition += " WHERE " + normalizedFilter;
+                logger.debug("Index [{}] has filter: WHERE {}", indexName, normalizedFilter);
             }
 
             indexDefinition += ";";
@@ -712,6 +714,67 @@ public class MSSQLDatabaseService implements DatabaseService {
 
         Integer invalidCount = jdbcTemplate.queryForObject(validationQuery, Integer.class, objectId, indexId);
         return invalidCount != null && invalidCount > 0;
+    }
+
+    /**
+     * Normalizes filter definitions from SQL Server to standard SQL format.
+     * SQL Server returns filter definitions like: ([IsActive]=(1))
+     * We normalize to: [IsActive] = 1
+     *
+     * @param filterDef The filter definition from SQL Server (e.g., "([IsActive]=(1))")
+     * @return Normalized filter definition (e.g., "[IsActive] = 1")
+     */
+    private String normalizeFilterDefinition(String filterDef) {
+        if (filterDef == null || filterDef.trim().isEmpty()) {
+            return filterDef;
+        }
+
+        // Start with the raw filter definition
+        String normalized = filterDef.trim();
+
+        // Remove surrounding parentheses if the entire expression is wrapped in them
+        // ([IsActive]=(1)) -> [IsActive]=(1)
+        while (normalized.startsWith("(") && normalized.endsWith(")")) {
+            String inner = normalized.substring(1, normalized.length() - 1);
+            // Only remove if the parentheses are actually surrounding the whole expression
+            // Check if removing them would break the expression
+            int openCount = 0;
+            boolean canRemove = true;
+            for (int i = 0; i < inner.length(); i++) {
+                if (inner.charAt(i) == '(') openCount++;
+                else if (inner.charAt(i) == ')') {
+                    openCount--;
+                    if (openCount < 0) {
+                        canRemove = false;
+                        break;
+                    }
+                }
+            }
+            if (canRemove && openCount == 0) {
+                normalized = inner;
+            } else {
+                break;
+            }
+        }
+
+        // Remove spaces inside brackets: [ IsActive ] -> [IsActive]
+        normalized = normalized.replaceAll("\\[\\s+", "[").replaceAll("\\s+\\]", "]");
+
+        // Add spaces around comparison operators: =(1) -> = 1, <> -> <>
+        normalized = normalized.replaceAll("([=><])\\(", "$1 (");   // operator followed by ( -> operator (
+        normalized = normalized.replaceAll("\\)([=><])", ") $1");   // ) followed by operator -> ) operator
+
+        // Normalize spaces around operators to exactly one space
+        normalized = normalized.replaceAll("\\s*([=><]+)\\s*", " $1 ");  // Spaces around comparison operators
+
+        // Remove parentheses around numeric literals: ( 1 ) -> 1
+        // Match pattern like: = ( digits ) or <> ( digits )
+        normalized = normalized.replaceAll("([=><]+)\\s*\\(\\s*(\\d+)\\s*\\)", "$1 $2");
+
+        // Clean up extra spaces and trim
+        normalized = normalized.replaceAll("\\s+", " ").trim();
+
+        return normalized;
     }
 
     /**
@@ -1191,7 +1254,6 @@ public class MSSQLDatabaseService implements DatabaseService {
         }
     }
 
-
     /**
      * Retrieves Full-Text catalogs from the database.
      * Full-Text catalogs must be created before Full-Text indexes.
@@ -1228,7 +1290,7 @@ public class MSSQLDatabaseService implements DatabaseService {
             definition.append(";");
 
             return new DbObject(
-                    "dbo",  // Full-Text catalogs are database-level objects
+                    defaultSchema,  // Full-Text catalogs are database-level objects
                     name.toLowerCase(),
                     DbObjectType.FULLTEXT_CATALOG,
                     definition.toString()
