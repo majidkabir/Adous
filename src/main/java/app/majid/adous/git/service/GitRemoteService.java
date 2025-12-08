@@ -8,8 +8,11 @@ import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.transport.CredentialsProvider;
+import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.TagOpt;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
 
 @Service
 public class GitRemoteService {
@@ -32,6 +35,18 @@ public class GitRemoteService {
                     .setRemote("origin")
                     .setPushTags()
                     .add(branchRef)
+                    .setCredentialsProvider(creds)
+                    .call();
+        }
+    }
+
+    public void pushTags(List<RefSpec> refSpecs) throws GitAPIException {
+        if (localMode) return;
+
+        try (Git git = new Git(repo)) {
+            git.push()
+                    .setRemote("origin")
+                    .setRefSpecs(refSpecs)
                     .setCredentialsProvider(creds)
                     .call();
         }

@@ -126,7 +126,7 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
         gitService.syncRemote();
 
         // Force dry run if not syncing to HEAD
-        if (!gitService.isHeadCommit(commitish)) {
+        if (!gitService.isHeadCommit(commitish) && !force) {
             logger.info("Commit '{}' is not HEAD, forcing dry run", commitish);
             dryRun = true;
         }

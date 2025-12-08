@@ -451,9 +451,63 @@ public class TableAlterScriptGenerator {
                                                   TableDefinition dbDef, TableDefinition gitDef, String gitTableDefinition) {
         List<String> statements = new ArrayList<>();
 
+        // Check if we're dropping all data columns - if so, drop the entire table and recreate it
+        List<String> columnsToRemove = dbDef.columns.keySet().stream()
+                .filter(col -> !gitDef.columns.containsKey(col))
+                .toList();
+
+        // Count how many data columns would remain after drops
+        long remainingDataColumns = dbDef.columns.keySet().stream()
+                .filter(col -> gitDef.columns.containsKey(col))
+                .filter(col -> {
+                    ColumnDefinition colDef = dbDef.columns.get(col);
+                    return !colDef.isIdentity; // Identity columns don't count as data columns
+                })
+                .count();
+
+        // If we're about to drop all data columns, drop and recreate the entire table instead
+        if (remainingDataColumns == 0 && !columnsToRemove.isEmpty()) {
+            logger.info("Dropping entire table [{}].[{}] and recreating because all data columns would be removed",
+                    schema, name);
+
+            // Before dropping the table, drop all foreign key constraints that reference it from other tables
+            List<String[]> referencingForeignKeys = getForeignKeysReferencingPrimaryKey(schema, name);
+            for (String[] fkInfo : referencingForeignKeys) {
+                String parentSchema = fkInfo[0];
+                String parentTable = fkInfo[1];
+                String fkName = fkInfo[2];
+
+                statements.add(String.format(
+                        "ALTER TABLE [%s].[%s] DROP CONSTRAINT [%s];",
+                        parentSchema, parentTable, fkName
+                ));
+                logger.debug("Dropping foreign key [{}].[{}] before dropping table [{}].[{}]",
+                        parentSchema, fkName, schema, name);
+            }
+
+            statements.add(String.format("DROP TABLE IF EXISTS [%s].[%s];", schema, name));
+            statements.add(gitTableDefinition);
+            return statements;
+        }
+
         // Drop primary key if it exists and needs modification
         if (dbDef.primaryKeyName != null &&
                 !dbDef.primaryKeyColumns.equals(gitDef.primaryKeyColumns)) {
+            // Before dropping primary key, drop all foreign key constraints that reference it
+            List<String[]> referencingForeignKeys = getForeignKeysReferencingPrimaryKey(schema, name);
+            for (String[] fkInfo : referencingForeignKeys) {
+                String parentSchema = fkInfo[0];
+                String parentTable = fkInfo[1];
+                String fkName = fkInfo[2];
+
+                statements.add(String.format(
+                        "ALTER TABLE [%s].[%s] DROP CONSTRAINT [%s];",
+                        parentSchema, parentTable, fkName
+                ));
+                logger.debug("Dropping foreign key [{}].[{}] before dropping primary key [{}]",
+                        parentSchema, fkName, dbDef.primaryKeyName);
+            }
+
             statements.add(String.format(
                     "ALTER TABLE [%s].[%s] DROP CONSTRAINT [%s];",
                     schema, name, dbDef.primaryKeyName
@@ -840,6 +894,43 @@ public class TableAlterScriptGenerator {
 
         Integer count = jdbcTemplate.queryForObject(query, Integer.class, constraintName);
         return count != null && count > 0;
+    }
+
+    /**
+     * Gets all foreign key constraints from other tables that reference this table's primary key.
+     * These must be dropped before the primary key can be modified.
+     *
+     * @param schema Schema name of the table
+     * @param tableName Table name whose primary key is referenced
+     * @return List of foreign key constraint info in format [parentSchema, parentTable, fkName]
+     */
+    private List<String[]> getForeignKeysReferencingPrimaryKey(String schema, String tableName) {
+        List<String[]> foreignKeys = new ArrayList<>();
+
+        // Query for foreign keys that reference this table
+        String query = """
+                SELECT 
+                    SCHEMA_NAME(pt.schema_id) AS parent_schema,
+                    pt.name AS parent_table,
+                    fk.name AS fk_name
+                FROM sys.foreign_keys fk
+                JOIN sys.tables pt ON fk.parent_object_id = pt.object_id
+                JOIN sys.tables rt ON fk.referenced_object_id = rt.object_id
+                JOIN sys.schemas rs ON rt.schema_id = rs.schema_id
+                WHERE rs.name = ? AND rt.name = ?
+                """;
+
+        jdbcTemplate.query(query, rs -> {
+            String parentSchema = rs.getString("parent_schema");
+            String parentTable = rs.getString("parent_table");
+            String fkName = rs.getString("fk_name");
+
+            foreignKeys.add(new String[]{parentSchema, parentTable, fkName});
+            logger.debug("Found foreign key [{}].[{}] referencing {}.{}",
+                    parentSchema, fkName, schema, tableName);
+        }, schema, tableName);
+
+        return foreignKeys;
     }
 
     /**
