@@ -267,17 +267,6 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
         });
     }
 
-    private boolean notExistsInRepoHead(RepoObject repoObject, String dbName) {
-        var repoDiffDef = gitService.getFileContentAtRef(Constants.HEAD, repoObject.path())
-                .orElse(null);
-        var basePath = repoObject.path().
-                replace(gitService.getDiffPath() + "/" + dbName, gitService.getBasePath());
-        var repoBaseDef = gitService.getFileContentAtRef(Constants.HEAD, basePath)
-                .orElse(null);
-        return !(Objects.equals(repoObject.definition(), repoBaseDef) ||
-                Objects.equals(repoObject.definition(), repoDiffDef));
-    }
-
     private boolean isDbOnboardedInRepo(String dbName) throws IOException {
         return gitService.tagExists(dbName);
     }
@@ -290,6 +279,17 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
         return outOfSyncObjects.stream()
                 .filter(o -> notExistsInRepoHead(o, dbName))
                 .toList();
+    }
+
+    private boolean notExistsInRepoHead(RepoObject repoObject, String dbName) {
+        var repoDiffDef = gitService.getFileContentAtRef(Constants.HEAD, repoObject.path())
+                .orElse(null);
+        var basePath = repoObject.path().
+                replace(gitService.getDiffPath() + "/" + dbName, gitService.getBasePath());
+        var repoBaseDef = gitService.getFileContentAtRef(Constants.HEAD, basePath)
+                .orElse(null);
+        return !(sqlEquivalenceCheckerService.equals(repoObject.definition(), repoBaseDef) ||
+                sqlEquivalenceCheckerService.equals(repoObject.definition(), repoDiffDef));
     }
 
     private List<RepoObject> computeDbDiffForCommit(String commitish, String dbName) throws IOException {
