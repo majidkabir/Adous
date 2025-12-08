@@ -634,6 +634,7 @@ public class MSSQLDatabaseService implements DatabaseService {
                     i.index_id,
                     i.is_unique,
                     i.type AS index_type,
+                    i.filter_definition,
                     STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
                 FROM sys.indexes i
                 LEFT JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id AND ic.is_included_column = 0
@@ -642,7 +643,7 @@ public class MSSQLDatabaseService implements DatabaseService {
                     AND i.is_primary_key = 0
                     AND i.is_unique_constraint = 0
                     AND i.type > 0
-                GROUP BY i.name, i.index_id, i.is_unique, i.type
+                GROUP BY i.name, i.index_id, i.is_unique, i.type, i.filter_definition
                 """;
 
         List<String> indexes = new ArrayList<>();
@@ -651,7 +652,7 @@ public class MSSQLDatabaseService implements DatabaseService {
             String indexName = rs.getString("index_name");
             int indexId = rs.getInt("index_id");
             boolean isUnique = rs.getBoolean("is_unique");
-            int indexType = rs.getInt("index_type");
+            String filterDefinition = rs.getString("filter_definition");
             String columns = rs.getString("columns");
 
             // Validate that all key columns have valid data types for indexing
@@ -668,23 +669,25 @@ public class MSSQLDatabaseService implements DatabaseService {
 
             String uniqueKeyword = isUnique ? "UNIQUE " : "";
 
-            String typeKeyword = switch (indexType) {
-                case 1 -> "CLUSTERED ";
-                case 2 -> "NONCLUSTERED ";
-                case 5 -> "CLUSTERED COLUMNSTORE ";
-                case 6 -> "NONCLUSTERED COLUMNSTORE ";
-                default -> null;
-            };
+            // Note: We don't include CLUSTERED/NONCLUSTERED keywords to match Git convention
+            // The index type is implicit from the database structure
 
-            if (typeKeyword == null) {
-                logger.warn("Skipping unsupported index type {} for index [{}] on [{}].[{}]",
-                        indexType, indexName, schemaName, tableName);
-                return;
+            String indexDefinition = String.format("CREATE %sINDEX [%s] ON [%s].[%s] (%s)",
+                    uniqueKeyword, indexName, schemaName, tableName, formattedColumns);
+
+            // Add WHERE clause if it exists (filtered index)
+            if (filterDefinition != null && !filterDefinition.trim().isEmpty()) {
+                indexDefinition += " " + filterDefinition;
+                logger.debug("Index [{}] has filter: {}", indexName, filterDefinition);
             }
-            indexes.add(String.format("CREATE %s%sINDEX [%s] ON [%s].[%s] (%s);",
-                    uniqueKeyword, typeKeyword, indexName, schemaName, tableName, formattedColumns));
+
+            indexDefinition += ";";
+            indexes.add(indexDefinition);
+
+            logger.debug("Generated index: {}", indexDefinition);
         }, objectId);
 
+        logger.debug("Retrieved {} indexes for table {}.{}", indexes.size(), schemaName, tableName);
         return indexes;
     }
 
@@ -757,9 +760,6 @@ public class MSSQLDatabaseService implements DatabaseService {
         List<DbObject> orderedChanges = orderByDependency(dbChanges);
 
         orderedChanges.forEach(change -> {
-            logger.debug("Processing change for {}.{} ({})",
-                    change.schema(), change.name(), change.type());
-
             String sql;
             if (change.type() == DbObjectType.TABLE) {
                 // For tables, use ALTER script generator to preserve data
