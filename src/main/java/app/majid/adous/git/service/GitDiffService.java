@@ -2,6 +2,9 @@ package app.majid.adous.git.service;
 
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.diff.DiffFormatter;
+import org.eclipse.jgit.lib.Constants;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.ObjectInserter;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
@@ -37,11 +40,20 @@ public class GitDiffService {
             }
 
             RevCommit commit = walk.parseCommit(repo.resolve(commitId));
-            RevCommit ancestor = walk.parseCommit(repo.resolve(ancestorId));
 
             CanonicalTreeParser oldTree = new CanonicalTreeParser();
             CanonicalTreeParser newTree = new CanonicalTreeParser();
-            oldTree.reset(reader, ancestor.getTree());
+
+            if (ancestorId == null || repo.resolve(ancestorId) == null) {
+                try (ObjectInserter inserter = repo.getObjectDatabase().newInserter()) {
+                    ObjectId emptyTreeId = inserter.insert(Constants.OBJ_TREE, new byte[0]);
+                    oldTree.reset(reader, emptyTreeId);
+                }
+            } else {
+                RevCommit ancestor = walk.parseCommit(repo.resolve(ancestorId));
+                oldTree.reset(reader, ancestor.getTree());
+            }
+
             newTree.reset(reader, commit.getTree());
 
             return df.scan(oldTree, newTree);
