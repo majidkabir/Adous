@@ -4,6 +4,8 @@ import app.majid.adous.synchronizer.model.DbObject;
 import app.majid.adous.synchronizer.model.DbObjectType;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -17,35 +19,32 @@ import javax.sql.DataSource;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Integration test for TableAlterScriptGenerator.
- * Uses Testcontainers to spin up a real SQL Server instance.
- */
 @Testcontainers
 class TableAlterScriptGeneratorTest {
 
     @Container
-    static MSSQLServerContainer<?> mssqlServer = new MSSQLServerContainer<>("mcr.microsoft.com/mssql/server:2022-latest")
-            .acceptLicense();
+    static MSSQLServerContainer<?> mssqlServer =
+            new MSSQLServerContainer<>("mcr.microsoft.com/mssql/server:2022-latest")
+                    .acceptLicense();
 
     private static JdbcTemplate jdbcTemplate;
-    private TableAlterScriptGenerator alterScriptGenerator;
+    private static TableAlterScriptGenerator alterScriptGenerator;
 
-    @BeforeEach
-    void setUp() {
-        if (jdbcTemplate == null) {
-            HikariConfig config = new HikariConfig();
-            config.setJdbcUrl(mssqlServer.getJdbcUrl());
-            config.setUsername(mssqlServer.getUsername());
-            config.setPassword(mssqlServer.getPassword());
-            config.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
-            config.setMaximumPoolSize(5);
-            DataSource dataSource = new HikariDataSource(config);
-            jdbcTemplate = new JdbcTemplate(dataSource);
-        }
-
+    @BeforeAll
+    static void initAll() {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(mssqlServer.getJdbcUrl());
+        config.setUsername(mssqlServer.getUsername());
+        config.setPassword(mssqlServer.getPassword());
+        config.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        config.setMaximumPoolSize(5);
+        DataSource dataSource = new HikariDataSource(config);
+        jdbcTemplate = new JdbcTemplate(dataSource);
         alterScriptGenerator = new TableAlterScriptGenerator(jdbcTemplate);
+    }
 
+    @AfterEach
+    void setUp() {
         cleanupTables();
     }
 
@@ -56,6 +55,15 @@ class TableAlterScriptGeneratorTest {
             jdbcTemplate.execute("IF OBJECT_ID('dbo.test_products', 'U') IS NOT NULL DROP TABLE dbo.test_products");
         } catch (Exception e) {
             System.err.println("Cleanup error: " + e.getMessage());
+        }
+    }
+
+    private void executeSql(String sqlScript) {
+        String[] statements = sqlScript.split("GO");
+        for (String stmt : statements) {
+            if (!stmt.trim().isEmpty()) {
+                jdbcTemplate.execute(stmt.trim());
+            }
         }
     }
 
@@ -556,12 +564,7 @@ class TableAlterScriptGeneratorTest {
 
             // Act
             String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
-            String[] statements = alterScript.split("GO");
-            for (String stmt : statements) {
-                if (!stmt.trim().isEmpty()) {
-                    jdbcTemplate.execute(stmt.trim());
-                }
-            }
+            executeSql(alterScript);
 
             // Assert
             Integer orderCount = jdbcTemplate.queryForObject(
@@ -571,9 +574,10 @@ class TableAlterScriptGeneratorTest {
             assertEquals(1, orderCount, "Order should still exist");
 
             // Verify FK still works (can't insert invalid user_id)
-            assertThrows(Exception.class, () -> {
-                jdbcTemplate.execute("INSERT INTO dbo.test_orders (user_id, amount, status) VALUES (999, 50.00, 'pending')");
-            }, "Foreign key constraint should still be enforced");
+            assertThrows(Exception.class, () ->
+                    jdbcTemplate.execute(
+                            "INSERT INTO dbo.test_orders (user_id, amount, status) VALUES (999, 50.00, 'pending')"),
+                    "Foreign key constraint should still be enforced");
         }
     }
 
@@ -695,12 +699,7 @@ class TableAlterScriptGeneratorTest {
                 "Constraint must be dropped before the column");
 
             // Act - Execute the script to verify it works
-            String[] statements = alterScript.split("GO");
-            for (String stmt : statements) {
-                if (!stmt.trim().isEmpty()) {
-                    jdbcTemplate.execute(stmt.trim());
-                }
-            }
+            executeSql(alterScript);
 
             // Assert - Verify column was dropped and data preserved
             Integer count = jdbcTemplate.queryForObject(
@@ -799,12 +798,7 @@ class TableAlterScriptGeneratorTest {
 
             // Assert and Execute
             assertNotNull(alterScript);
-            String[] statements = alterScript.split("GO");
-            for (String stmt : statements) {
-                if (!stmt.trim().isEmpty()) {
-                    jdbcTemplate.execute(stmt.trim());
-                }
-            }
+            executeSql(alterScript);
 
             // Verify column was dropped
             Integer columnCount = jdbcTemplate.queryForObject("""

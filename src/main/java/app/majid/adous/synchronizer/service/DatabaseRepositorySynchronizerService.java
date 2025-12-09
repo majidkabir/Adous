@@ -205,9 +205,8 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
 
             logger.debug("Starting sync for database '{}' from commit '{}'", dbName, commitish);
 
-            validateDatabaseOnboarded(dbName);
-
             if (!force) {
+                validateDatabaseOnboarded(dbName);
                 validateDatabaseInSync(dbName);
             }
 
