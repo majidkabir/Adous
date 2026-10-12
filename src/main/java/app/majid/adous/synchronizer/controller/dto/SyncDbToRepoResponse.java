@@ -1,6 +1,9 @@
 package app.majid.adous.synchronizer.controller.dto;
 
+import app.majid.adous.synchronizer.model.RepoFileChange;
 import io.swagger.v3.oas.annotations.media.Schema;
+
+import java.util.List;
 
 @Schema(description = "Response from syncing database to repository")
 public record SyncDbToRepoResponse(
@@ -10,10 +13,10 @@ public record SyncDbToRepoResponse(
         @Schema(description = "Whether this was a dry run", example = "false")
         boolean dryRun,
 
-        @Schema(description = "Details of repository objects that were synced", example = "[RepoObject(path=base/table/dbo/Users.sql)]")
-        String result,
-
         @Schema(description = "Success or error message", example = "Sync completed successfully")
-        String message
+        String message,
+
+        @Schema(description = "Repository files written (or, in a dry run, that would be written)")
+        List<RepoFileChange> changes
 ) {
 }

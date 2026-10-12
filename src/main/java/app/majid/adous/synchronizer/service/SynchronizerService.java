@@ -1,5 +1,6 @@
 package app.majid.adous.synchronizer.service;
 
+import app.majid.adous.synchronizer.model.RepoObject;
 import app.majid.adous.synchronizer.model.SyncResult;
 import org.eclipse.jgit.api.errors.GitAPIException;
 
@@ -17,23 +18,23 @@ public interface SynchronizerService {
      * This should only be called on an empty repository.
      *
      * @param dbName The name of the database to initialize from
-     * @return String representation of the changes made
+     * @return The repository files written
      * @throws IOException if Git operations fail
      * @throws GitAPIException if Git API operations fail
      * @throws IllegalStateException if repository is not empty or database has no objects
      */
-    String initRepo(String dbName) throws IOException, GitAPIException;
+    List<RepoObject> initRepo(String dbName) throws IOException, GitAPIException;
 
     /**
      * Synchronizes database changes to the repository.
      *
      * @param dbName The name of the database to sync
      * @param dryRun If true, only detect changes without committing
-     * @return String representation of the changes detected/made
+     * @return The repository files changed (or, in a dry run, that would be changed)
      * @throws IOException if Git operations fail
      * @throws GitAPIException if Git API operations fail
      */
-    String syncDbToRepo(String dbName, boolean dryRun) throws IOException, GitAPIException;
+    List<RepoObject> syncDbToRepo(String dbName, boolean dryRun) throws IOException, GitAPIException;
 
     /**
      * Synchronizes repository changes to multiple databases in parallel.
