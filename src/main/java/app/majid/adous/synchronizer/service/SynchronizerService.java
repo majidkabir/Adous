@@ -42,10 +42,22 @@ public interface SynchronizerService {
      * @param dbs List of database names to sync to
      * @param dryRun If true, only detect changes without applying
      * @param force If true, sync even if databases are out of sync
+     * @param allowDataLoss If true, apply changes that drop tables or columns;
+     *                      otherwise such databases are skipped with SKIPPED_DATA_LOSS
      * @return List of sync results for each database
      * @throws IOException if Git operations fail
      */
-    List<SyncResult> syncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force)
+    List<SyncResult> syncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force,
+                                  boolean allowDataLoss)
             throws IOException, GitAPIException;
+
+    /**
+     * Same as {@link #syncRepoToDb(String, List, boolean, boolean, boolean)} with
+     * data-loss changes disallowed.
+     */
+    default List<SyncResult> syncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force)
+            throws IOException, GitAPIException {
+        return syncRepoToDb(commitish, dbs, dryRun, force, false);
+    }
 }
 

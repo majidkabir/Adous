@@ -112,14 +112,15 @@ public class SynchronizerController {
     })
     public List<SyncResult> syncRepoToDb(@Valid @RequestBody SyncRepoToDbRequest request)
             throws IOException, GitAPIException {
-        logger.info("Received request to sync repository '{}' to {} database(s) (dryRun: {}, force: {})",
-                request.commitish(), request.dbs().size(), request.dryRun(), request.force());
+        logger.info("Received request to sync repository '{}' to {} database(s) (dryRun: {}, force: {}, allowDataLoss: {})",
+                request.commitish(), request.dbs().size(), request.dryRun(), request.force(), request.allowDataLoss());
 
         List<SyncResult> results = synchronizerService.syncRepoToDb(
                 request.commitish(),
                 request.dbs(),
                 request.dryRun(),
-                request.force()
+                request.force(),
+                request.allowDataLoss()
         );
 
         logger.info("Completed repository to database sync request with {} results", results.size());

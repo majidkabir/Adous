@@ -94,6 +94,57 @@ class DatabaseRepositorySynchronizerServiceTest {
         verify(gitService).addTags(List.of("db2"), "HEAD");
     }
 
+    @Test
+    void shouldSkipDatabaseWhenChangesWouldDropDataAndAllowDataLossIsFalse() throws Exception {
+        when(databaseService.findDataLossOperations(anyList())).thenAnswer(inv ->
+                "db1".equals(DatabaseContextHolder.getCurrentDb())
+                        ? List.of("ALTER TABLE [dbo].[t] DROP COLUMN [c];")
+                        : List.of());
+
+        Map<String, SyncResult> results = byDb(
+                service.syncRepoToDb("HEAD", List.of("db1", "db3"), false, true, false));
+
+        assertEquals(SyncResult.Status.SKIPPED_DATA_LOSS, results.get("db1").status());
+        assertTrue(results.get("db1").message().contains("DROP COLUMN [c]"));
+        assertTrue(results.get("db1").message().contains("allowDataLoss"));
+        assertEquals(SyncResult.Status.SYNCED, results.get("db3").status());
+        verify(gitService, never()).addTags(eq(List.of("db1")), anyString());
+        verify(databaseService, times(1)).applyChangesToDatabase(anyList());
+    }
+
+    @Test
+    void shouldReportDataLossInDryRun() throws Exception {
+        when(databaseService.findDataLossOperations(anyList()))
+                .thenReturn(List.of("DROP TABLE [dbo].[t];"));
+
+        Map<String, SyncResult> results = byDb(
+                service.syncRepoToDb("HEAD", List.of("db1"), true, true, false));
+
+        assertEquals(SyncResult.Status.SKIPPED_DATA_LOSS, results.get("db1").status());
+        verify(databaseService, never()).applyChangesToDatabase(anyList());
+    }
+
+    @Test
+    void shouldApplyDataLossChangesWhenAllowed() throws Exception {
+        Map<String, SyncResult> results = byDb(
+                service.syncRepoToDb("HEAD", List.of("db1"), false, true, true));
+
+        assertEquals(SyncResult.Status.SYNCED, results.get("db1").status());
+        verify(databaseService, never()).findDataLossOperations(anyList());
+        verify(databaseService).applyChangesToDatabase(anyList());
+    }
+
+    @Test
+    void shouldBlockDataLossByDefaultWithFourArgumentOverload() throws Exception {
+        when(databaseService.findDataLossOperations(anyList()))
+                .thenReturn(List.of("DROP TABLE [dbo].[t];"));
+
+        Map<String, SyncResult> results = byDb(service.syncRepoToDb("HEAD", List.of("db1"), false, true));
+
+        assertEquals(SyncResult.Status.SKIPPED_DATA_LOSS, results.get("db1").status());
+        verify(databaseService, never()).applyChangesToDatabase(anyList());
+    }
+
     private static Map<String, SyncResult> byDb(List<SyncResult> results) {
         return results.stream().collect(Collectors.toMap(SyncResult::dbName, Function.identity()));
     }

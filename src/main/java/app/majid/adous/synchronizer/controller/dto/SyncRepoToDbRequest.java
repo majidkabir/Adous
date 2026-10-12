@@ -20,6 +20,11 @@ public record SyncRepoToDbRequest(
         boolean dryRun,
 
         @Schema(description = "Force sync even if database is out of sync", example = "false", defaultValue = "false")
-        boolean force
+        boolean force,
+
+        @Schema(description = "Allow changes that destroy data (DROP TABLE, DROP COLUMN). "
+                + "When false, databases needing such changes are skipped with status SKIPPED_DATA_LOSS.",
+                example = "false", defaultValue = "false")
+        boolean allowDataLoss
 ) {
 }

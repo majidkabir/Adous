@@ -253,6 +253,7 @@ Content-Type: application/json
 - `dbs`: List of database names to sync
 - `dryRun`: Preview changes without applying (default: false)
 - `force`: Force sync even if database is out of sync (default: false)
+- `allowDataLoss`: Apply changes that drop tables or columns (default: false); otherwise the database is skipped with `SKIPPED_DATA_LOSS`
 
 **Example:**
 ```bash
