@@ -32,7 +32,7 @@ Found a bug? Help us fix it!
    - Environment details (OS, Java version, SQL Server version)
    - Relevant logs (set `logging.level.app.majid.adous=DEBUG`)
 
-[Report a Bug →](../../issues/new?template=bug_report.md)
+[Report a Bug →](https://github.com/majidkabir/Adous/issues/new?template=bug_report.md)
 
 ### Suggesting Features
 
@@ -43,7 +43,7 @@ Have an idea for improvement?
 3. **Describe the use case** and why it would be valuable
 4. **Consider implementation** if you have ideas
 
-[Suggest a Feature →](../../issues/new?template=feature_request.md)
+[Suggest a Feature →](https://github.com/majidkabir/Adous/issues/new?template=feature_request.md)
 
 ### Contributing Code
 
@@ -119,16 +119,21 @@ src/
     └── synchronizer/
 ```
 
-### Running with Docker Compose
+### Running Locally Against SQL Server
 
-Test the full setup locally:
+Start SQL Server in Docker:
 
 ```bash
-cd examples/mssql
-docker compose up -d
+docker run -d --name adous-mssql \
+  -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD='YourStr0ng!Passw0rd' \
+  -p 1433:1433 mcr.microsoft.com/mssql/server:2022-latest
 ```
 
-This starts SQL Server and Adous service together.
+Add it under `spring.datasources.dbs` in `application.yml` (see [Configuration](../README.md#configuration)), then run:
+
+```bash
+API_KEY=dev-key-change-me-please GIT_REMOTE_URI=https://github.com/you/your-schema-repo.git GIT_TOKEN=... ./gradlew bootRun
+```
 
 ## Pull Request Process
 
@@ -351,7 +356,7 @@ docker run -e 'ACCEPT_EULA=Y' -e 'SA_PASSWORD=YourStrong@Passw0rd' \
 ## Questions?
 
 If you have questions about contributing, feel free to:
-- Open a [GitHub Discussion](../../discussions)
+- Open a [GitHub Discussion](https://github.com/majidkabir/Adous/discussions)
 - Comment on a relevant issue
 - Reach out to maintainers
 

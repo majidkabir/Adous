@@ -776,6 +776,5 @@ jobs:
 ## See Also
 
 - [Architecture Documentation](architecture.md) - How Adous works internally
-- [Examples](../examples/workflow.md) - Step-by-step tutorial
 - [README](../README.md) - Project overview and features
 

@@ -458,6 +458,5 @@ Adous uses **Java Virtual Threads** (Project Loom) for parallel processing.
 ## See Also
 
 - [Usage Guide](usage.md) - API reference and examples
-- [Examples](../examples/workflow.md) - Step-by-step tutorial
 - [README](../README.md) - Project overview
 
