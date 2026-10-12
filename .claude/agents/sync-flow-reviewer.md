@@ -11,8 +11,8 @@ When reviewing sync logic, check for:
 2. **Partial failure handling**: If the operation fails mid-way, is the system left in a consistent state?
 3. **dryRun completeness**: Does dryRun truly make zero mutations?
 4. **Tag atomicity**: Is the sync tag written only after full success?
-5. **Out-of-sync detection**: Is the tag comparison reliable across timezones and concurrent operations?
-6. **Dependency ordering**: Are DDL objects applied in correct dependency order (types→tables→views→procedures)?
+5. **Out-of-sync detection**: Is the comparison against the database's tag reliable when other writers push concurrently?
+6. **Dependency ordering**: Are DDL objects applied in correct dependency order (see `docs/architecture.md`, Applying Changes)?
 7. **Rollback capability**: Can a failed repo→db sync be cleanly rolled back?
 
 For each issue found, provide:

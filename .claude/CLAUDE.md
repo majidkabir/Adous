@@ -7,9 +7,10 @@ Adous is a Spring Boot service that synchronizes SQL Server database schemas wit
 ## Key Invariants
 
 - Every sync operation MUST support dryRun mode
-- DDL must be applied in dependency order (types → tables → views → functions → procedures → triggers)
-- Tagging in Git tracks which commit each database is synced to — never break this contract
-- The `base/` path holds canonical versions; `diff/` holds database-specific overrides
+- DDL must be applied in dependency order — see `docs/architecture.md` (Applying Changes) for the current order
+- Tagging in Git tracks which commit each database is synced to (one tag per database, named after it) — never break this contract
+- The `base/` path holds canonical versions; `diff/` holds database-specific overrides. db→repo only ever writes `diff/`
+- Never drop tables or columns without `allowDataLoss`
 
 ## Active Skills
 
@@ -21,12 +22,12 @@ Adous is a Spring Boot service that synchronizes SQL Server database schemas wit
 ## Active Agents
 
 - `@sync-flow-reviewer` — deep sync logic review
-- `@sql-equivalence-analyst` — T-SQL comparison analysis  
-- `/release-prepare <version>` — release workflow
+- `/release-prepare <version>` — release PR (version bump + changelog); merging it tags and publishes
 
 ## Common Tasks
 
-- Add new DB object type: implement in `MSSQLDatabaseService`, add to dependency order in DDL skill
+- Add new DB object type: implement in `MSSQLDatabaseService`, add it to `getDependencyPriority`, document it in `docs/architecture.md` and `docs/MSSQL_FEATURES_SUPPORT.md`
 - Add new API endpoint: controller → service → add dryRun support → add integration test
-- Debug sync issues: check Git tags first (`git tag --list "*dbName*"`)
+- Debug sync issues: check the database's tag first (`git log -1 <dbname>`, lower case)
+- Keep `docs/` in sync with behaviour changes
 

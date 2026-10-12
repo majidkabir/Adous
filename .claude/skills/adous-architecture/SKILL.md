@@ -21,7 +21,8 @@ description: Adous project architecture, layering rules, and coding conventions 
 
 ## Concurrency
 
-- Use Java 25 virtual threads for parallel DB object processing
+- repo→db processes databases in parallel, one virtual thread each
+- Sync operations are serialized by a lock in `DatabaseRepositorySynchronizerService`; Git writes by a lock in `GitService`
 - Never block virtual threads with synchronized blocks — use ReentrantLock or structured concurrency
 - Testcontainers tests run single-threaded; don't parallelize test setup
 

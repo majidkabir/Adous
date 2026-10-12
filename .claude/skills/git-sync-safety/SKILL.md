@@ -8,22 +8,25 @@ description: Safety rules for Git sync operations in Adous — prevents dangerou
 ## Always Check Before Sync
 
 Before repo→db sync:
-1. Verify target DB tag matches expected commitish (out-of-sync detection)
-2. If out-of-sync and `force=false`, REJECT and explain divergence
-3. If `dryRun=true`, compute diff but make ZERO changes to DB or Git
+1. Verify the DB is onboarded (has a tag) and matches the repository at its tag (out-of-sync detection)
+2. If out-of-sync and `force=false`, skip it with `SKIPPED_OUT_OF_SYNC` and list the divergent objects
+3. If the changes drop tables or columns and `allowDataLoss=false`, skip it with `SKIPPED_DATA_LOSS`
+4. If `dryRun=true`, compute the changes but make ZERO changes to DB or Git
 
 ## Tagging Strategy
 
-Each successful repo→db sync creates a tag: `{dbName}/{timestamp}` (e.g., `production-db/20240315-143022`)
-- Never reuse or overwrite existing sync tags
-- Tag is created AFTER successful apply, never before
-- On partial failure, do NOT create the tag
+Each database has exactly one lightweight tag named after it in lower case (e.g. `orders_prod`), marking the commit the database matches.
+- Created by init-repo or the database's first db→repo
+- Moved (force-updated and force-pushed) to the applied commitish after every successful repo→db, including when there was nothing to apply
+- Moved only after the DDL succeeded, inside the same transaction: if the push fails, the DDL rolls back
+- On failure, do NOT move the tag
 
 ## Commit Discipline
 
-- db→repo commits must include: object type, schema, object name in message
+- db→repo writes only `diff/` overrides for that database, never `base/`
+- Commit messages name the database (`Repo synced with DB: <db>`); per-object detail is in the response's `changes`
 - Never commit empty diffs (check before committing)
-- Push failures must be surfaced to the caller — never silently swallowed
+- Push failures must be surfaced to the caller — never silently swallowed (check JGit `PushResult` statuses)
 
 ## Force Flag
 
