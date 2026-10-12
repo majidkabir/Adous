@@ -198,9 +198,10 @@ GET /actuator/health
 
 ```http
 GET /actuator/prometheus
+X-API-Key: your-api-key
 ```
 
-Returns Prometheus-formatted metrics.
+Returns Prometheus-formatted metrics. Requires the API key (only `/actuator/health` and `/actuator/info` are public).
 
 ---
 
@@ -213,7 +214,8 @@ All configuration can be overridden with environment variables.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AUTH_TYPE` | Authentication type (`APIKEY`) | `APIKEY` |
-| `API_KEY` | API key for APIKEY authentication | - |
+| `API_KEY` | API key for APIKEY authentication. **Required** — startup fails if unset | - |
+| `ADOUS_LOG_LEVEL` | Log level for Adous classes (`DEBUG` for troubleshooting) | `INFO` |
 
 ### Database
 
@@ -585,7 +587,7 @@ spring:
 Check Prometheus metrics for sync performance and errors:
 
 ```bash
-curl http://localhost:8080/actuator/prometheus | grep adous
+curl -H "X-API-Key: your-api-key" http://localhost:8080/actuator/prometheus | grep adous
 ```
 
 ---

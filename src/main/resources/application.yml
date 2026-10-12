@@ -6,8 +6,8 @@ spring:
     authentication:
       # Authentication type: APIKEY
       type: ${AUTH_TYPE:APIKEY}
-      # API Key for APIKEY authentication (X-API-Key header)
-      api-key: ${API_KEY:test-api-key}
+      # API Key for APIKEY authentication (X-API-Key header). Required: startup fails if unset.
+      api-key: ${API_KEY:}
   cache:
     type: simple
     cache-names:
@@ -50,8 +50,7 @@ management:
 logging:
   level:
     root: INFO
-    app.majid.adous: DEBUG
-    org.springframework.security: DEBUG
+    app.majid.adous: ${ADOUS_LOG_LEVEL:INFO}
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
     file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"

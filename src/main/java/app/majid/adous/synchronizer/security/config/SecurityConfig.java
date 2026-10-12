@@ -25,7 +25,8 @@ public class SecurityConfig {
     /**
      * Configures the security filter chain.
      * - Disables CSRF as this is a stateless API
-     * - Allows public access to actuator endpoints
+     * - Allows public access to health, info and API docs only
+     *   (metrics and Prometheus require the API key)
      * - Requires authentication for all other endpoints
      * - Uses custom token authentication filter
      *
@@ -40,7 +41,9 @@ public class SecurityConfig {
                 .sessionManagement(session -> session
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/**", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                        .requestMatchers(
+                                "/actuator/health", "/actuator/health/**", "/actuator/info",
+                                "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs", "/v3/api-docs/**").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(authenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
