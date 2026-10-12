@@ -11,11 +11,10 @@
 
 ## 📚 Documentation
 
-- **[Quick Start Guide](examples/workflow.md)** - Step-by-step tutorial
+- **[Getting Started](#getting-started)** - Configure and run Adous
 - **[Architecture](docs/architecture.md)** - How Adous works internally
 - **[Usage Guide](docs/usage.md)** - API reference and examples
 - **[Contributing](docs/CONTRIBUTING.md)** - How to contribute
-- **[Examples](examples/)** - Sample configurations and schemas
 
 ## Features
 

@@ -1,9 +1,4 @@
 ---
-name: adous-architucture
-description: Adous project architecture, layering rules, and coding conventions for the DB-as-Code synchronizer
----
-
----
 name: adous-architecture
 description: Adous project architecture, layering rules, and coding conventions for the DB-as-Code synchronizer
 ---
