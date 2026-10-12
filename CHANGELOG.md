@@ -3,6 +3,30 @@
 All notable changes to Adous are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-13
+
+### Upgrading
+- **Tags with `GIT_PREFIX_PATH`:** sync tags are now `{prefix}/{db}` instead of `{db}`. A database that only has the old `{db}` tag keeps using it until its next sync writes the prefixed tag. Without a prefix, tags are unchanged.
+- **Table constraints now follow Git:** repo→db now adds, changes and drops foreign keys, unique and check constraints, column defaults and indexes to match the Git definition (0.1.0 ignored most of these). Run a dry run first and check `changes` for unexpected drops, especially for tables extracted by 0.1.0, which did not record foreign key `ON DELETE`/`ON UPDATE` actions or index options (clustered, columnstore, `INCLUDE`, `DESC`). Running db→repo first brings those definitions up to date.
+
+### Features
+- Table changes cover constraints, defaults and indexes: foreign keys (including `ON DELETE`/`ON UPDATE` actions), unique and check constraints, column defaults and indexes are added, changed and removed. Unchanged indexes are left alone instead of being rebuilt.
+- Index kinds are kept: clustered, clustered and nonclustered columnstore, `INCLUDE` columns, descending keys, and primary keys on a nonclustered index. Changes to these are detected.
+- Constraint and default names are kept as they are in the database.
+- Swagger UI has an **Authorize** button for the API key, so "Try it out" works. The API version shown comes from the build.
+
+### Bug Fixes
+- Objects are applied in dependency order: full-text catalogs, types, sequences, tables (by foreign key), synonyms, functions, views, procedures, triggers. A new table using a new type or sequence, or a trigger on a new view, no longer fails when both arrive in one sync. Drops run in reverse order.
+- With no `GIT_PREFIX_PATH`, db→repo failed whenever it had to write an override (invalid path `diff//db`).
+- Deployments sharing a repository with different prefixes no longer share tags for databases with the same name.
+- Altering a column that has a check constraint, default or index no longer fails; they are dropped and re-created around the change.
+- Changing a primary key no longer leaves other tables' foreign keys to it dropped.
+- XML, spatial and hash indexes are skipped with a warning instead of being written as invalid DDL.
+
+### Internal
+- Documentation rewritten to match the code (architecture, usage, supported features, Claude Code context).
+- Integration tests for apply order, prefix namespacing, index kinds and table constraint changes.
+
 ## [0.1.0] - 2026-10-12
 
 First release.
@@ -39,4 +63,5 @@ First release.
 - GitHub Actions moved to Node 24 versions.
 - Claude Code project context, skills and agents.
 
+[0.2.0]: https://github.com/majidkabir/Adous/releases/tag/v0.2.0
 [0.1.0]: https://github.com/majidkabir/Adous/releases/tag/v0.1.0

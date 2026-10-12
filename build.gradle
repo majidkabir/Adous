@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'app.majid'
-version = '0.1.0'
+version = '0.2.0'
 description = 'Service that manage multiple instance of a DB'
 
 java {
