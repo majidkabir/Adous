@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.eclipse.jgit.diff.DiffEntry.ChangeType.*;
 
@@ -42,6 +43,16 @@ public class GitService {
     private final String baseRootPath;
     private final String diffRootPath;
     private final String defaultBranchRef;
+
+    /**
+     * Guards every operation that mutates local refs or talks to the remote.
+     * JGit ref updates and pushes on a shared {@code Repository} are not safe to
+     * interleave (a fetch force-updating heads while a commit is being written,
+     * or concurrent tag pushes from parallel repo-to-db syncs).
+     * A {@link ReentrantLock} is used instead of {@code synchronized} so virtual
+     * threads are never pinned.
+     */
+    private final ReentrantLock writeLock = new ReentrantLock(true);
 
     public GitService(GitRepository gitRepository,
                       GitDiffService diffService,
@@ -102,24 +113,56 @@ public class GitService {
         return dbObjects;
     }
 
+    /**
+     * Commits the changes to the default branch, pushes the branch, then creates and
+     * pushes the given tags. The branch is pushed before the tags so that a rejected
+     * branch push never leaves a remote tag pointing at a commit that is not on the branch.
+     */
     public ObjectId applyChangesAndPush(List<RepoObject> changes, String commitMessage, List<String> tags)
             throws IOException, GitAPIException {
-        ObjectId commitId = commitService.applyChanges(changes, commitMessage, defaultBranchRef);
-        addTags(tags, defaultBranchRef);
-        remoteService.push(defaultBranchRef);
-        return commitId;
+        writeLock.lock();
+        try {
+            ObjectId previousHead = gitRepository.getRepo().resolve(defaultBranchRef);
+            ObjectId commitId = commitService.applyChanges(changes, commitMessage, defaultBranchRef);
+            try {
+                remoteService.push(defaultBranchRef);
+            } catch (GitAPIException e) {
+                // Keep the local branch identical to the remote so the failed commit
+                // does not leak into later operations.
+                try {
+                    commitService.resetBranch(defaultBranchRef, previousHead);
+                } catch (IOException resetFailure) {
+                    e.addSuppressed(resetFailure);
+                }
+                throw e;
+            }
+            addTags(tags, commitId.name());
+            return commitId;
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     public void addTags(List<String> tags, String commitish) throws IOException, GitAPIException {
-        List<RefSpec> refSpecs = new ArrayList<>();
-        for (String tag : tags) {
-            refSpecs.add(gitRepository.addTagToCommit(tag, commitish));
+        writeLock.lock();
+        try {
+            List<RefSpec> refSpecs = new ArrayList<>();
+            for (String tag : tags) {
+                refSpecs.add(gitRepository.addTagToCommit(tag, commitish));
+            }
+            remoteService.pushTags(refSpecs);
+        } finally {
+            writeLock.unlock();
         }
-        remoteService.pushTags(refSpecs);
     }
 
     public void syncRemote() throws GitAPIException {
-        remoteService.sync();
+        writeLock.lock();
+        try {
+            remoteService.sync();
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     public boolean isEmptyRepo() throws IOException {

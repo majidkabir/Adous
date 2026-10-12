@@ -112,15 +112,43 @@ public class GitCommitService {
         return commitId;
     }
 
+    /**
+     * Force-moves a branch back to the given commit, or deletes it when {@code target} is null.
+     * Used to discard a local commit whose push was rejected.
+     */
+    public void resetBranch(String branchRef, ObjectId target) throws IOException {
+        RefUpdate refUpdate = repo.updateRef(branchRef);
+        refUpdate.setForceUpdate(true);
+        RefUpdate.Result result;
+        if (target == null) {
+            result = refUpdate.delete();
+        } else {
+            refUpdate.setNewObjectId(target);
+            result = refUpdate.forceUpdate();
+        }
+        if (result != RefUpdate.Result.FORCED && result != RefUpdate.Result.NO_CHANGE
+                && result != RefUpdate.Result.NEW) {
+            throw new IOException("Failed to reset " + branchRef + ": " + result);
+        }
+    }
+
     private void updateBranchRef(String branchRef, ObjectId oldId, ObjectId newId) throws IOException {
         RefUpdate refUpdate = repo.updateRef(branchRef);
         refUpdate.setNewObjectId(newId);
         if (oldId != null) {
             refUpdate.setExpectedOldObjectId(oldId);
         }
-        refUpdate.update();
+        RefUpdate.Result result = refUpdate.update();
+        if (result != RefUpdate.Result.NEW && result != RefUpdate.Result.FAST_FORWARD) {
+            throw new IOException("Failed to update " + branchRef + " to " + newId.name()
+                    + ": " + result + " (branch may have been modified concurrently)");
+        }
 
         RefUpdate headUpdate = repo.updateRef(Constants.HEAD, true);
-        headUpdate.link(branchRef);
+        RefUpdate.Result headResult = headUpdate.link(branchRef);
+        if (headResult != RefUpdate.Result.NEW && headResult != RefUpdate.Result.FORCED
+                && headResult != RefUpdate.Result.NO_CHANGE) {
+            throw new IOException("Failed to link HEAD to " + branchRef + ": " + headResult);
+        }
     }
 }
