@@ -16,12 +16,17 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.List;
 
 /**
  * API Key authentication filter.
  * Validates requests using an API key provided in the X-API-Key header.
  * Active when authentication type is set to 'APIKEY'.
+ * <p>
+ * Only the endpoints listed in {@link #PUBLIC_PATHS} are reachable without a key;
+ * metrics and Prometheus endpoints require the key like the API does.
  */
 @Component
 @ConditionalOnProperty(name = "spring.application.authentication.type", havingValue = "APIKEY")
@@ -29,16 +34,38 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter implements 
 
     private static final Logger logger = LoggerFactory.getLogger(ApiKeyAuthenticationFilter.class);
     private static final String API_KEY_HEADER = "X-API-Key";
+    private static final int RECOMMENDED_MIN_KEY_LENGTH = 16;
 
-    @Value("${spring.application.authentication.api-key}")
-    private String validApiKey;
+    /** Paths reachable without an API key (path itself or anything below it). */
+    public static final List<String> PUBLIC_PATHS = List.of(
+            "/actuator/health",
+            "/actuator/info",
+            "/swagger-ui",
+            "/swagger-ui.html",
+            "/v3/api-docs");
+
+    private final byte[] validApiKey;
+
+    public ApiKeyAuthenticationFilter(
+            @Value("${spring.application.authentication.api-key:}") String validApiKey) {
+        if (validApiKey == null || validApiKey.isBlank()) {
+            throw new IllegalStateException(
+                    "API_KEY must be set when AUTH_TYPE=APIKEY (spring.application.authentication.api-key)");
+        }
+        if (validApiKey.length() < RECOMMENDED_MIN_KEY_LENGTH) {
+            logger.warn("The configured API key is shorter than {} characters; use a long random value",
+                    RECOMMENDED_MIN_KEY_LENGTH);
+        }
+        this.validApiKey = validApiKey.getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static boolean isPublicPath(String path) {
+        return PUBLIC_PATHS.stream().anyMatch(p -> path.equals(p) || path.startsWith(p + "/"));
+    }
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getRequestURI();
-        return path.startsWith("/actuator") ||
-               path.startsWith("/swagger-ui") ||
-               path.startsWith("/v3/api-docs");
+        return isPublicPath(request.getRequestURI());
     }
 
     @Override
@@ -49,17 +76,14 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter implements 
 
         if (apiKey == null || apiKey.trim().isEmpty()) {
             logger.warn("Missing API key in request from {}", request.getRemoteAddr());
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            response.setContentType("application/json");
-            response.getWriter().write("{\"error\": \"Missing API key. Please provide X-API-Key header.\"}");
+            reject(response, "Missing API key. Please provide X-API-Key header.");
             return;
         }
 
-        if (!apiKey.equals(validApiKey)) {
+        // Constant-time comparison so response timing does not leak how much of the key matched
+        if (!MessageDigest.isEqual(apiKey.getBytes(StandardCharsets.UTF_8), validApiKey)) {
             logger.warn("Invalid API key attempt from {}", request.getRemoteAddr());
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            response.setContentType("application/json");
-            response.getWriter().write("{\"error\": \"Invalid API key.\"}");
+            reject(response, "Invalid API key.");
             return;
         }
 
@@ -79,5 +103,10 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter implements 
             SecurityContextHolder.clearContext();
         }
     }
-}
 
+    private static void reject(HttpServletResponse response, String message) throws IOException {
+        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        response.setContentType("application/json");
+        response.getWriter().write("{\"error\": \"" + message + "\"}");
+    }
+}

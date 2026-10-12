@@ -116,6 +116,8 @@ Create a `.syncignore` file in `src/main/resources/` to exclude specific databas
    ```
    Use in `X-API-Key` header: `X-API-Key: your-api-key`
 
+   `API_KEY` is required: the service refuses to start without it. Use a long random value, e.g. `openssl rand -hex 32`.
+
 ### Building
 
 ```bash
@@ -145,6 +147,7 @@ docker run -d \
   -p 8080:8080 \
   -e GIT_REMOTE_URI=https://github.com/your-org/your-repo.git \
   -e GIT_TOKEN=your-github-token \
+  -e API_KEY="$(openssl rand -hex 32)" \
   -e GIT_PREFIX_PATH="" \
   -e GIT_COMMIT_USERNAME="Adous System" \
   -e GIT_COMMIT_EMAIL="adous@mail.com" \
@@ -305,10 +308,23 @@ Adous includes built-in monitoring capabilities via Spring Boot Actuator:
 
 ### Available Endpoints
 
-- **Health**: `http://localhost:8080/actuator/health` - Application health status
-- **Info**: `http://localhost:8080/actuator/info` - Application information
-- **Metrics**: `http://localhost:8080/actuator/metrics` - Application metrics
-- **Prometheus**: `http://localhost:8080/actuator/prometheus` - Prometheus-compatible metrics
+- **Health**: `http://localhost:8080/actuator/health` - Application health status (public)
+- **Info**: `http://localhost:8080/actuator/info` - Application information (public)
+- **Metrics**: `http://localhost:8080/actuator/metrics` - Application metrics (requires `X-API-Key`)
+- **Prometheus**: `http://localhost:8080/actuator/prometheus` - Prometheus-compatible metrics (requires `X-API-Key`)
+
+Recent Prometheus versions can send the key with `http_headers` in the scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: adous
+    metrics_path: /actuator/prometheus
+    http_headers:
+      X-API-Key:
+        secrets: ["<your API key>"]
+    static_configs:
+      - targets: ["adous:8080"]
+```
 
 ### Metrics
 
