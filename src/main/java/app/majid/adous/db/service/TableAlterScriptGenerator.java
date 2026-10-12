@@ -769,10 +769,10 @@ public class TableAlterScriptGenerator {
         List<String> indexStatements = new ArrayList<>();
 
         // Pattern to match CREATE INDEX statements with complete capture
-        // Matches: CREATE [UNIQUE] [CLUSTERED|NONCLUSTERED] INDEX [name] ON ... WHERE ... ;
+        // Matches: CREATE [UNIQUE] [CLUSTERED|NONCLUSTERED] [COLUMNSTORE] INDEX [name] ON ... WHERE ... ;
         // We capture the entire statement to preserve exact formatting and WHERE clauses
         Pattern indexPattern = Pattern.compile(
-                "(CREATE\\s+(?:UNIQUE\\s+)?(?:(?:CLUSTERED|NONCLUSTERED)\\s+)?INDEX\\s+\\[([^\\]]+)\\][^;]*;)",
+                "(CREATE\\s+(?:UNIQUE\\s+)?(?:(?:CLUSTERED|NONCLUSTERED)\\s+)?(?:COLUMNSTORE\\s+)?INDEX\\s+\\[([^\\]]+)\\][^;]*;)",
                 Pattern.CASE_INSENSITIVE | Pattern.DOTALL
         );
 

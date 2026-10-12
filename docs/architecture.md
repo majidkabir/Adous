@@ -120,7 +120,19 @@ Objects with `is_ms_shipped = 1` are excluded. CLR modules (no `sys.sql_modules`
 
 Column defaults are written inline (`DEFAULT (...)`) without a constraint name. User-chosen names are kept.
 
-**Indexes:** indexes are written as `CREATE [UNIQUE] INDEX ... ON ... (columns) [WHERE filter]`. Indexes on `text`, `ntext`, `image`, `xml` or `(n)varchar(max)` / `varbinary(max)` columns are skipped with a warning.
+**Indexes:** indexes are written as follows. Nonclustered is the default, so it has no keyword.
+
+| Kind | Written as |
+|---|---|
+| Rowstore | `CREATE [UNIQUE] [CLUSTERED] INDEX ... ON ... (key [DESC], ...) [INCLUDE (...)] [WHERE filter]` |
+| Clustered columnstore | `CREATE CLUSTERED COLUMNSTORE INDEX ... ON ...` |
+| Nonclustered columnstore | `CREATE NONCLUSTERED COLUMNSTORE INDEX ... ON ... (columns) [WHERE filter]` |
+
+A primary key backed by a nonclustered index is written as `PRIMARY KEY NONCLUSTERED`.
+
+Skipped with a warning:
+- rowstore indexes whose key columns are `text`, `ntext`, `image`, `xml` or `(n)varchar(max)` / `varbinary(max)`
+- XML, spatial and memory-optimized (hash) indexes
 
 ## SQL Equivalence
 
@@ -130,6 +142,7 @@ Definitions are compared after normalization, so cosmetic differences don't coun
 - `[brackets]` around simple identifiers and the default-schema prefix removed
 - parentheses around literals, operator spacing, default values and data type spellings normalized
 - table columns and index statements sorted
+- `NONCLUSTERED` on an index and `CLUSTERED` on a primary key dropped, since they're the defaults; `UNIQUE`, `CLUSTERED` indexes and `COLUMNSTORE` are kept, so changing them counts
 
 ## Applying Changes
 
@@ -210,7 +223,7 @@ A tag can't share its name with another tag's namespace: a deployment without a 
 
 ## Known Limitations
 
-- Indexes are written without `CLUSTERED` / `COLUMNSTORE` / XML / spatial keywords, so those index types are recreated as regular indexes.
+- XML, spatial and memory-optimized indexes are not managed.
 - Table changes are partial: see [Table changes](#applying-changes). In particular, changing a primary key drops the foreign keys that reference it.
 - Computed columns, full-text indexes, partitioning, indexed views, CLR objects and database-level objects (users, roles, permissions) are not managed. See [MSSQL_FEATURES_SUPPORT.md](MSSQL_FEATURES_SUPPORT.md).
 

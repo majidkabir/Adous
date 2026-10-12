@@ -375,5 +375,43 @@ class SqlEquivalenceCheckerServiceTest {
             return new ConcurrentMapCacheManager("sqlNormalizationCache");
         }
     }
-}
 
+    private static final String TABLE = "CREATE TABLE [dbo].[t] ([id] int NOT NULL, [a] int NULL, CONSTRAINT [PK_t] PRIMARY KEY%s ([id]));\nGO\n";
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            // index statement A                                          | index statement B                         | equivalent
+            "CREATE NONCLUSTERED INDEX [ix] ON [dbo].[t] ([a]);           | CREATE INDEX [ix] ON [dbo].[t] ([a]);              | true",
+            "CREATE UNIQUE NONCLUSTERED INDEX [ix] ON [dbo].[t] ([a]);    | CREATE UNIQUE INDEX [ix] ON [dbo].[t] ([a]);       | true",
+            "CREATE UNIQUE INDEX [ix] ON [dbo].[t] ([a]);                 | CREATE INDEX [ix] ON [dbo].[t] ([a]);              | false",
+            "CREATE CLUSTERED INDEX [ix] ON [dbo].[t] ([a]);              | CREATE INDEX [ix] ON [dbo].[t] ([a]);              | false",
+            "CREATE INDEX [ix] ON [dbo].[t] ([a]) INCLUDE ([id]);         | CREATE INDEX [ix] ON [dbo].[t] ([a]);              | false",
+            "CREATE INDEX [ix] ON [dbo].[t] ([a] DESC);                   | CREATE INDEX [ix] ON [dbo].[t] ([a]);              | false",
+            "CREATE NONCLUSTERED COLUMNSTORE INDEX [ix] ON [dbo].[t] ([a]); | CREATE INDEX [ix] ON [dbo].[t] ([a]);            | false"
+    })
+    void shouldCompareIndexKindsByMeaning(String indexA, String indexB, boolean equivalent) {
+        String sqlA = TABLE.formatted("") + indexA;
+        String sqlB = TABLE.formatted("") + indexB;
+
+        assertEquals(equivalent, service.normalizeSql(sqlA).equals(service.normalizeSql(sqlB)),
+                () -> service.normalizeSql(sqlA) + " vs " + service.normalizeSql(sqlB));
+    }
+
+    @Test
+    void shouldTreatClusteredPrimaryKeyAsDefaultButNotNonclustered() {
+        assertEquals(service.normalizeSql(TABLE.formatted(" CLUSTERED")), service.normalizeSql(TABLE.formatted("")));
+        assertNotEquals(service.normalizeSql(TABLE.formatted(" NONCLUSTERED")), service.normalizeSql(TABLE.formatted("")));
+    }
+
+    @Test
+    void shouldIgnoreOrderOfIndexStatementsOfAnyKind() {
+        String a = TABLE.formatted(" NONCLUSTERED")
+                + "CREATE CLUSTERED INDEX [cx] ON [dbo].[t] ([a]);\nGO\n"
+                + "CREATE NONCLUSTERED COLUMNSTORE INDEX [ncci] ON [dbo].[t] ([a], [id]);\nGO\n";
+        String b = TABLE.formatted(" NONCLUSTERED")
+                + "CREATE NONCLUSTERED COLUMNSTORE INDEX [ncci] ON [dbo].[t] ([a], [id]);\nGO\n"
+                + "CREATE CLUSTERED INDEX [cx] ON [dbo].[t] ([a]);\nGO\n";
+
+        assertEquals(service.normalizeSql(a), service.normalizeSql(b));
+    }
+}

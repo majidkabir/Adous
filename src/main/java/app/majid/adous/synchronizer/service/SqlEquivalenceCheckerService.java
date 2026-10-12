@@ -279,8 +279,15 @@ public class SqlEquivalenceCheckerService {
         return result;
     }
 
+    /**
+     * Removes keywords that only restate the default: NONCLUSTERED on a rowstore index and
+     * CLUSTERED on a primary key. UNIQUE, CLUSTERED indexes and COLUMNSTORE are kept, so
+     * changing them is detected.
+     */
     private String normalizeIndexKeywords(String sql) {
-        return sql.replaceAll("(?i)create\\s+(clustered|nonclustered|unique|unique\\s+clustered|unique\\s+nonclustered)\\s+index", "create index");
+        return sql
+                .replaceAll("(?i)create\\s+(unique\\s+)?nonclustered\\s+index", "create $1index")
+                .replaceAll("(?i)primary\\s+key\\s+clustered", "primary key");
     }
 
     /**
@@ -438,14 +445,19 @@ public class SqlEquivalenceCheckerService {
      * @param sql Normalized SQL statement (may contain multiple statements)
      * @return SQL with index statements sorted alphabetically
      */
+    /** Start of any index statement in normalized (lower-case, single-spaced) SQL. */
+    private static final String INDEX_STATEMENT =
+            "create (?:unique )?(?:clustered |nonclustered )?(?:columnstore )?index ";
+    private static final String INDEX_STATEMENT_START = "(?=" + INDEX_STATEMENT + ")";
+
     private String sortIndexStatements(String sql) {
-        if (!sql.contains("create index")) {
+        if (!sql.matches("(?s).*" + INDEX_STATEMENT + ".*")) {
             return sql; // No indexes, return as-is
         }
 
         try {
             // Split SQL into parts: CREATE TABLE part + CREATE INDEX parts
-            String[] parts = sql.split("(?=create index)|(?=create unique index)");
+            String[] parts = sql.split(INDEX_STATEMENT_START);
 
             if (parts.length <= 1) {
                 return sql; // Only one part or no indexes
@@ -458,7 +470,7 @@ public class SqlEquivalenceCheckerService {
             List<String> indexStatements = new ArrayList<>();
             for (int i = 1; i < parts.length; i++) {
                 String part = parts[i].trim();
-                if (part.startsWith("create index") || part.startsWith("create unique index")) {
+                if (part.matches("(?s)" + INDEX_STATEMENT + ".*")) {
                     indexStatements.add(part);
                 }
             }
@@ -492,8 +504,8 @@ public class SqlEquivalenceCheckerService {
         // Pattern: CREATE [UNIQUE] INDEX <name> ON ...
         String normalized = indexStatement.toLowerCase().trim();
 
-        // Remove "create unique index" or "create index"
-        String afterCreate = normalized.replace("create unique index", "").replace("create index", "").trim();
+        // Remove "create [unique] [clustered|nonclustered] [columnstore] index"
+        String afterCreate = normalized.replaceFirst(INDEX_STATEMENT, "").trim();
 
         // Index name is the first word
         int spaceIndex = afterCreate.indexOf(' ');
