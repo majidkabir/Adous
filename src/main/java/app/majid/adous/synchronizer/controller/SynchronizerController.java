@@ -2,6 +2,8 @@ package app.majid.adous.synchronizer.controller;
 
 import app.majid.adous.synchronizer.controller.dto.SyncDbToRepoResponse;
 import app.majid.adous.synchronizer.controller.dto.SyncRepoToDbRequest;
+import app.majid.adous.synchronizer.model.RepoFileChange;
+import app.majid.adous.synchronizer.model.RepoObject;
 import app.majid.adous.synchronizer.model.SyncResult;
 import app.majid.adous.synchronizer.service.DatabaseRepositorySynchronizerService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -58,14 +60,15 @@ public class SynchronizerController {
             throws IOException, GitAPIException {
         logger.info("Received request to initialize repository with database: {}", dbName);
 
-        String result = synchronizerService.initRepo(dbName);
+        List<RepoObject> written = synchronizerService.initRepo(dbName);
 
         logger.info("Successfully initialized repository with database: {}", dbName);
         return new SyncDbToRepoResponse(
                 dbName,
                 false,
-                result,
-                "Repository initialized successfully"
+                written.toString(),
+                "Repository initialized successfully",
+                written.stream().map(RepoFileChange::from).toList()
         );
     }
 
@@ -88,12 +91,13 @@ public class SynchronizerController {
             @Parameter(description = "Perform dry run without committing changes", example = "false")
             @RequestParam(defaultValue = "false") boolean dryRun)
             throws IOException, GitAPIException {
-        String result = synchronizerService.syncDbToRepo(dbName, dryRun);
+        List<RepoObject> changed = synchronizerService.syncDbToRepo(dbName, dryRun);
         return new SyncDbToRepoResponse(
                 dbName,
                 dryRun,
-                result,
-                "Sync completed successfully"
+                changed.toString(),
+                "Sync completed successfully",
+                changed.stream().map(RepoFileChange::from).toList()
         );
     }
 

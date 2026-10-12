@@ -38,8 +38,12 @@ POST /api/synchronizer/init-repo/{dbName}
 {
   "dbName": "myDatabase",
   "dryRun": false,
-  "result": "[list of all objects added]",
-  "message": "Repository initialized successfully"
+  "message": "Repository initialized successfully",
+  "changes": [
+    { "path": "base/TABLE/dbo/users.sql", "type": "TABLE", "schema": "dbo", "name": "users", "action": "WRITE" },
+    { "path": "base/PROCEDURE/dbo/usp_get_users.sql", "type": "PROCEDURE", "schema": "dbo", "name": "usp_get_users", "action": "WRITE" }
+  ],
+  "result": "[RepoObject[path=base/TABLE/dbo/users.sql], ...]"
 }
 ```
 
@@ -75,10 +79,22 @@ POST /api/synchronizer/db-to-repo/{dbName}?dryRun={true|false}
 {
   "dbName": "myDatabase",
   "dryRun": false,
-  "result": "Added: dbo/TABLE/NewTable.sql, Modified: dbo/PROCEDURE/UpdateProc.sql",
-  "message": "Sync completed successfully"
+  "message": "Sync completed successfully",
+  "changes": [
+    { "path": "diff/prod/mydatabase/PROCEDURE/dbo/usp_get_orders.sql", "type": "PROCEDURE", "schema": "dbo", "name": "usp_get_orders", "action": "WRITE" },
+    { "path": "diff/prod/mydatabase/VIEW/dbo/v_report.sql", "type": "VIEW", "schema": "dbo", "name": "v_report", "action": "DELETE" },
+    { "path": "diff/prod/mydatabase/FUNCTION/dbo/fn_old.sql", "type": "FUNCTION", "schema": "dbo", "name": "fn_old", "action": "MARK_ABSENT" }
+  ],
+  "result": "[RepoObject[path=diff/prod/mydatabase/PROCEDURE/dbo/usp_get_orders.sql], ...]"
 }
 ```
+
+`changes[].action`:
+- `WRITE` — file written with the object's definition
+- `DELETE` — database-specific override removed (the database matches `base/` again)
+- `MARK_ABSENT` — empty override written: the object does not exist in this database
+
+`result` is the same list as text and is **deprecated**; use `changes`.
 
 **Example:**
 ```bash
@@ -123,16 +139,29 @@ Content-Type: application/json
 - `allowDataLoss` - Apply changes that drop tables or columns (default: false). When false, a database whose changes include `DROP TABLE` or `DROP COLUMN` is skipped with status `SKIPPED_DATA_LOSS` and the blocked statements in `message`. Dry runs report this too. `force` does not imply `allowDataLoss`.
 
 **Response:**
+One result per database:
+
 ```json
-{
-  "commitish": "main",
-  "dbs": ["database1"],
-  "dryRun": false,
-  "force": false,
-  "result": "Applied: dbo/TABLE/NewTable.sql, dbo/PROCEDURE/UpdateProc.sql",
-  "message": "Sync completed successfully"
-}
+[
+  {
+    "dbName": "database1",
+    "status": "SYNCED",
+    "changes": [
+      { "type": "TABLE", "schema": "dbo", "name": "orders", "action": "CREATE_OR_UPDATE" },
+      { "type": "PROCEDURE", "schema": "dbo", "name": "usp_old", "action": "DROP" }
+    ],
+    "message": "[DbObject[schema=dbo, name=orders, type=TABLE], ...]"
+  },
+  {
+    "dbName": "database2",
+    "status": "SKIPPED_DATA_LOSS",
+    "changes": [],
+    "message": "Sync to 'database2' would destroy data; set allowDataLoss=true to apply: ALTER TABLE [dbo].[orders] DROP COLUMN [legacy];"
+  }
+]
 ```
+
+`status` is one of `SYNCED`, `SUCCESS_DRY_RUN`, `SKIPPED_NOT_ONBOARDED`, `SKIPPED_OUT_OF_SYNC`, `SKIPPED_DATA_LOSS`, `FAILED`. `changes` lists the objects applied (or, in a dry run, that would be applied). `message` carries the reason for skipped and failed databases; for successful ones it repeats the changes as text, kept for compatibility.
 
 **Example:**
 ```bash
@@ -417,13 +446,20 @@ Dry run mode allows you to preview changes without applying them.
 
 ### Example Output
 
+DB → Repo (`/db-to-repo/myDatabase?dryRun=true`):
+
 ```json
 {
+  "dbName": "myDatabase",
   "dryRun": true,
-  "result": "Would add: dbo/TABLE/NewTable.sql, Would modify: dbo/PROCEDURE/UpdateProc.sql",
-  "message": "Dry run completed (no changes applied)"
+  "message": "Sync completed successfully",
+  "changes": [
+    { "path": "diff/prod/mydatabase/PROCEDURE/dbo/usp_get_orders.sql", "type": "PROCEDURE", "schema": "dbo", "name": "usp_get_orders", "action": "WRITE" }
+  ]
 }
 ```
+
+Repo → DB returns `"status": "SUCCESS_DRY_RUN"` per database with the `changes` that would be applied.
 
 ---
 

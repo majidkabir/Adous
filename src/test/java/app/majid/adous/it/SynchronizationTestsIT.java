@@ -5,6 +5,7 @@ import app.majid.adous.git.service.GitCommitService;
 import app.majid.adous.git.service.GitService;
 import app.majid.adous.synchronizer.db.DatabaseService;
 import app.majid.adous.synchronizer.model.DbObject;
+import app.majid.adous.synchronizer.model.DbObjectChange;
 import app.majid.adous.synchronizer.model.DbObjectType;
 import app.majid.adous.synchronizer.model.RepoObject;
 import app.majid.adous.synchronizer.model.SyncResult;
@@ -343,12 +344,15 @@ class SynchronizationTestsIT {
                         GO""";
         updateRepo(List.of(new RepoObject("diff/test-prefix/db2/PROCEDURE/dbo/proc1.sql", null)));
         String expectedResponse = "[DbObject[schema=dbo, name=proc1, type=PROCEDURE]]";
+        var expectedChanges = List.of(new DbObjectChange(
+                DbObjectType.PROCEDURE, "dbo", "proc1", DbObjectChange.Action.CREATE_OR_UPDATE));
 
         // Dry run true
         List<SyncResult> dryRunResponse = synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db2"), true, false);
 
         assertEquals(SyncResult.Status.SUCCESS_DRY_RUN, dryRunResponse.getFirst().status());
         assertEquals(expectedResponse, dryRunResponse.getFirst().message());
+        assertEquals(expectedChanges, dryRunResponse.getFirst().changes());
         var expectedOldProc1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1OldDef);
         assertObjectExistInDb("db2", expectedOldProc1);
 
@@ -357,6 +361,7 @@ class SynchronizationTestsIT {
 
         assertEquals(SyncResult.Status.SYNCED, response.getFirst().status());
         assertEquals(expectedResponse, response.getFirst().message());
+        assertEquals(expectedChanges, response.getFirst().changes());
         var expectedNewProc1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1NewDef);
         assertObjectExistInDb("db2", expectedNewProc1);
     }
@@ -386,20 +391,20 @@ class SynchronizationTestsIT {
         assertEquals(SyncResult.Status.SKIPPED_OUT_OF_SYNC, actualOutOfSyncResponse.getFirst().status());
 
         // Dryrun set to true
-        var actualDryRunResponse = synchronizerService.syncDbToRepo("db2", true);
+        var actualDryRunResponse = synchronizerService.syncDbToRepo("db2", true).toString();
 
         var expectedResponse = "[RepoObject[path=diff/test-prefix/db2/PROCEDURE/dbo/proc2.sql]]";
         assertEquals(normalize(expectedResponse), normalize(actualDryRunResponse));
         assertTrue(gitService.getFileContentAtRef(Constants.HEAD, "diff/test-prefix/db2/PROCEDURE/dbo/proc2.sql").isEmpty());
 
         // Dryrun set to false
-        var actualResponse = synchronizerService.syncDbToRepo("db2", false);
+        var actualResponse = synchronizerService.syncDbToRepo("db2", false).toString();
         assertEquals(normalize(expectedResponse), normalize(actualResponse));
         var proc2InDb2Diff = gitService.getFileContentAtRef(Constants.HEAD, "diff/test-prefix/db2/PROCEDURE/dbo/proc2.sql").get();
         assertEquals(normalize(proc2Def), normalize(proc2InDb2Diff));
 
         // Already synced, so no changes
-        var noChangeResponse = synchronizerService.syncDbToRepo("db2", false);
+        var noChangeResponse = synchronizerService.syncDbToRepo("db2", false).toString();
         assertEquals("[]", noChangeResponse);
     }
 

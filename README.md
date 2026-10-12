@@ -211,8 +211,12 @@ curl -X POST http://localhost:8080/api/synchronizer/init-repo/myDatabase
 {
   "dbName": "myDatabase",
   "dryRun": false,
-  "result": "[list of all objects added]",
-  "message": "Repository initialized successfully"
+  "message": "Repository initialized successfully",
+  "changes": [
+    { "path": "base/TABLE/dbo/users.sql", "type": "TABLE", "schema": "dbo", "name": "users", "action": "WRITE" },
+    { "path": "base/PROCEDURE/dbo/usp_get_users.sql", "type": "PROCEDURE", "schema": "dbo", "name": "usp_get_users", "action": "WRITE" }
+  ],
+  "result": "[RepoObject[path=base/TABLE/dbo/users.sql], ...]"
 }
 ```
 
