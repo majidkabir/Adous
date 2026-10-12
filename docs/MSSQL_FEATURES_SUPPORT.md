@@ -37,7 +37,7 @@ These SQL Server features are fully implemented and operational in Adous.
   - Stored procedure definitions
   - SET options (ANSI_NULLS, QUOTED_IDENTIFIER)
 - **Method:** Extract via `sys.procedures` and `sys.sql_modules`
-- **Application:** DROP/CREATE pattern
+- **Application:** `CREATE OR ALTER` (keeps permissions)
 
 ### 3. **Scalar Functions**
 - **Status:** ✅ Fully Supported
@@ -45,7 +45,7 @@ These SQL Server features are fully implemented and operational in Adous.
   - User-defined scalar functions (UDF)
   - CLR functions
 - **Method:** Extract via `sys.objects` where `type = 'FN'`
-- **Application:** DROP/CREATE pattern
+- **Application:** `CREATE OR ALTER` (keeps permissions); DROP/CREATE only when the function kind changes, e.g. scalar → table-valued
 
 ### 4. **Table-Valued Functions (TVF)**
 - **Status:** ✅ Fully Supported
@@ -53,7 +53,7 @@ These SQL Server features are fully implemented and operational in Adous.
   - Inline table-valued functions (ITF)
   - Multi-statement table-valued functions (MSTVF)
 - **Method:** Extract via `sys.objects` where `type IN ('IF', 'TF')`
-- **Application:** DROP/CREATE pattern
+- **Application:** `CREATE OR ALTER` (keeps permissions); DROP/CREATE only when the function kind changes, e.g. inline → multi-statement
 
 ### 5. **Views**
 - **Status:** ✅ Fully Supported
@@ -63,7 +63,7 @@ These SQL Server features are fully implemented and operational in Adous.
   - Topological sorting for application order
   - SQL parsing to detect view-to-view dependencies
 - **Method:** Extract via `sys.views` and `sys.sql_modules`
-- **Application:** DROP/CREATE with dependency ordering
+- **Application:** `CREATE OR ALTER` with dependency ordering (keeps permissions)
 
 ### 6. **Triggers**
 - **Status:** ✅ Fully Supported
@@ -71,7 +71,7 @@ These SQL Server features are fully implemented and operational in Adous.
   - DML triggers (INSERT, UPDATE, DELETE)
   - DDL triggers (schema and server-level)
 - **Method:** Extract via `sys.triggers` and `sys.sql_modules`
-- **Application:** DROP/CREATE pattern
+- **Application:** `CREATE OR ALTER`
 
 ### 7. **Sequences**
 - **Status:** ✅ Fully Supported

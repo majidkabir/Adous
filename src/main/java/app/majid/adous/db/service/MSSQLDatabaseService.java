@@ -12,11 +12,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -38,6 +40,10 @@ public class MSSQLDatabaseService implements DatabaseService {
     private final JdbcTemplate jdbcTemplate;
     private final TableAlterScriptGenerator tableAlterScriptGenerator;
 
+    /** Module types that support CREATE OR ALTER. */
+    private static final Set<DbObjectType> MODULE_TYPES = EnumSet.of(
+            DbObjectType.PROCEDURE, DbObjectType.FUNCTION, DbObjectType.VIEW, DbObjectType.TRIGGER);
+
     public MSSQLDatabaseService(JdbcTemplate jdbcTemplate, TableAlterScriptGenerator tableAlterScriptGenerator) {
         this.jdbcTemplate = jdbcTemplate;
         this.tableAlterScriptGenerator = tableAlterScriptGenerator;
@@ -53,7 +59,9 @@ public class MSSQLDatabaseService implements DatabaseService {
                         rs.getString("schema_name").toLowerCase(),
                         rs.getString("name").toLowerCase(),
                         DbObjectType.valueOf(rs.getString("object_type")),
-                        rs.getString("definition")
+                        // Objects applied with CREATE OR ALTER store that text; keep the
+                        // canonical CREATE form so the repository does not churn
+                        ModuleDefinitionRewriter.toCanonicalCreate(rs.getString("definition"))
                 )
         );
 
@@ -819,6 +827,8 @@ public class MSSQLDatabaseService implements DatabaseService {
     /**
      * Applies the actual object changes.
      * For TABLEs: generates ALTER statements to preserve data
+     * For procedures, functions, views and triggers: uses CREATE OR ALTER so the object keeps
+     * its id and therefore its permissions (falls back to DROP + CREATE when that is impossible)
      * For other objects: uses DROP and CREATE pattern
      * Objects are processed in dependency order to ensure referenced objects exist:
      * 1. Tables (base objects)
@@ -835,6 +845,9 @@ public class MSSQLDatabaseService implements DatabaseService {
 
         orderedChanges.forEach(change -> {
             String sql;
+            Optional<String> createOrAlter = change.definition() == null || change.type() == DbObjectType.TABLE
+                    ? Optional.empty()
+                    : createOrAlterScript(change);
             if (change.type() == DbObjectType.TABLE) {
                 // For tables, use ALTER script generator to preserve data
                 if (change.definition() != null) {
@@ -847,8 +860,14 @@ public class MSSQLDatabaseService implements DatabaseService {
                     sql = buildDropQuery(change);
                     executeWithGoBatchSeparator(sql);
                 }
+            } else if (createOrAlter.isPresent()) {
+                executeWithGoBatchSeparator(createOrAlter.get());
             } else {
-                // For non-table objects, use traditional DROP/CREATE pattern
+                // For other non-table objects, use traditional DROP/CREATE pattern
+                if (change.definition() != null && MODULE_TYPES.contains(change.type())) {
+                    logger.warn("Recreating {} [{}].[{}] with DROP + CREATE; existing permissions on it will be lost",
+                            change.type(), change.schema(), change.name());
+                }
                 StringBuilder sqlBuilder = new StringBuilder();
                 sqlBuilder.append(buildDropQuery(change));
 
@@ -859,6 +878,44 @@ public class MSSQLDatabaseService implements DatabaseService {
                 executeWithGoBatchSeparator(sqlBuilder.toString());
             }
         });
+    }
+
+    /**
+     * Builds a {@code CREATE OR ALTER} script for procedures, functions, views and triggers.
+     * Empty when the object must be dropped and recreated instead: other object types, a
+     * definition without a recognizable CREATE statement, or a function whose kind
+     * (scalar / inline table / multi-statement table) differs from the existing one,
+     * which SQL Server cannot ALTER.
+     */
+    private Optional<String> createOrAlterScript(DbObject change) {
+        if (!MODULE_TYPES.contains(change.type())) {
+            return Optional.empty();
+        }
+        if (change.type() == DbObjectType.FUNCTION && !canAlterFunctionInPlace(change)) {
+            return Optional.empty();
+        }
+        return ModuleDefinitionRewriter.toCreateOrAlter(change.definition());
+    }
+
+    private boolean canAlterFunctionInPlace(DbObject function) {
+        List<String> existingTypes = jdbcTemplate.queryForList("""
+                SELECT RTRIM(o.type)
+                FROM sys.objects o
+                JOIN sys.schemas s ON o.schema_id = s.schema_id
+                WHERE s.name = ? AND o.name = ?
+                """, String.class, function.schema(), function.name());
+        if (existingTypes.isEmpty()) {
+            return true; // new function: CREATE OR ALTER simply creates it
+        }
+        Optional<ModuleDefinitionRewriter.FunctionKind> existingKind = switch (existingTypes.getFirst()) {
+            case "FN" -> Optional.of(ModuleDefinitionRewriter.FunctionKind.SCALAR);
+            case "IF" -> Optional.of(ModuleDefinitionRewriter.FunctionKind.INLINE_TABLE);
+            case "TF" -> Optional.of(ModuleDefinitionRewriter.FunctionKind.MULTI_STATEMENT_TABLE);
+            default -> Optional.empty(); // CLR or a different object type with the same name
+        };
+        Optional<ModuleDefinitionRewriter.FunctionKind> newKind =
+                ModuleDefinitionRewriter.functionKind(function.definition());
+        return existingKind.isPresent() && existingKind.equals(newKind);
     }
 
     /**
