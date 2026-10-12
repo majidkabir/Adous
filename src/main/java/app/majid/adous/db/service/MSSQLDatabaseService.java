@@ -13,6 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.Comparator;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -1078,92 +1080,87 @@ public class MSSQLDatabaseService implements DatabaseService {
     }
 
     /**
-     * Orders database objects by dependency to ensure objects are created before they are referenced.
-     * Dependency order:
-     * 1. Tables without foreign keys (base tables)
-     * 2. Tables with foreign keys (ordered by their dependencies)
-     * 3. Scalar Types, Table Types - can be used in table columns
-     * 4. Sequences - standalone objects
-     * 5. Synonyms - aliases to other objects
-     * 6. Functions, Procedures - depend on tables
-     * 7. Views - depend on tables and functions (sorted by inter-view dependencies)
-     * 8. Triggers - depend on tables
+     * Orders changes so every object exists before something that needs it:
+     * creates and updates first, in dependency order, then drops in the reverse order
+     * (so dependent objects are dropped before what they depend on).
      */
     private List<DbObject> orderByDependency(List<DbObject> dbChanges) {
-        List<DbObject> orderedList = new ArrayList<>();
+        List<DbObject> upserts = dbChanges.stream().filter(o -> o.definition() != null).toList();
+        List<DbObject> drops = dbChanges.stream().filter(o -> o.definition() == null).toList();
 
-        // Separate tables, views, and other objects
-        List<DbObject> tables = dbChanges.stream()
-                .filter(obj -> obj.type() == DbObjectType.TABLE)
-                .toList();
+        List<DbObject> ordered = new ArrayList<>(orderForCreation(upserts, this::extractForeignKeyDependencies));
 
-        List<DbObject> views = dbChanges.stream()
-                .filter(obj -> obj.type() == DbObjectType.VIEW)
-                .toList();
-
-        List<DbObject> nonTablesAndViews = dbChanges.stream()
-                .filter(obj -> obj.type() != DbObjectType.TABLE && obj.type() != DbObjectType.VIEW)
-                .sorted((a, b) -> {
-                    int priorityA = getDependencyPriority(a.type());
-                    int priorityB = getDependencyPriority(b.type());
-                    return Integer.compare(priorityA, priorityB);
-                })
-                .toList();
-
-        logger.info("Ordering dependencies: {} tables, {} views, {} other objects",
-                   tables.size(), views.size(), nonTablesAndViews.size());
-
-        // Order tables by foreign key dependencies
-        List<DbObject> orderedTables = orderTablesByForeignKeys(tables);
-
-        // Order views by their inter-view dependencies
-        if (!views.isEmpty()) {
-            logger.info("Analyzing view dependencies for {} views...", views.size());
-            Map<String, Set<String>> viewDependencies = extractViewDependenciesFromSQL(views);
-
-            if (!viewDependencies.isEmpty()) {
-                logger.info("Found dependencies for {} views", viewDependencies.size());
-                viewDependencies.forEach((view, deps) ->
-                    logger.debug("View {} depends on: {}", view, deps)
-                );
-            } else {
-                logger.info("No inter-view dependencies detected");
-            }
-
-            List<DbObject> orderedViews = sortViewsByDependency(views, viewDependencies);
-
-            logger.info("View creation order:");
-            for (int i = 0; i < orderedViews.size(); i++) {
-                DbObject v = orderedViews.get(i);
-                logger.info("  {}. {}.{}", i + 1, v.schema(), v.name());
-            }
-
-            // Combine: tables first, then other objects (by priority), then views (sorted by dependency)
-            orderedList.addAll(orderedTables);
-            orderedList.addAll(nonTablesAndViews);
-            orderedList.addAll(orderedViews);
-        } else {
-            // No views, just combine tables and other objects
-            orderedList.addAll(orderedTables);
-            orderedList.addAll(nonTablesAndViews);
+        if (!drops.isEmpty()) {
+            // Dropped tables have no definition; take their foreign keys from the database
+            Map<String, List<String>> dbForeignKeys = currentForeignKeys();
+            List<DbObject> dropOrder = new ArrayList<>(orderForCreation(drops,
+                    t -> dbForeignKeys.getOrDefault(t.schema() + "." + t.name(), List.of())));
+            Collections.reverse(dropOrder);
+            ordered.addAll(dropOrder);
         }
 
-        return orderedList;
+        logger.info("Apply order: {}", ordered);
+        return ordered;
+    }
+
+    /**
+     * Sorts objects into creation order: by type priority (see {@link #getDependencyPriority}),
+     * tables by foreign keys and views by references between them.
+     */
+    private List<DbObject> orderForCreation(List<DbObject> objects,
+                                            java.util.function.Function<DbObject, List<String>> tableDependencies) {
+        List<DbObject> ordered = new ArrayList<>();
+        objects.stream()
+                .map(DbObject::type)
+                .distinct()
+                .sorted(Comparator.comparingInt(this::getDependencyPriority))
+                .forEach(type -> {
+                    List<DbObject> ofType = objects.stream().filter(o -> o.type() == type).toList();
+                    if (type == DbObjectType.TABLE) {
+                        ordered.addAll(orderTablesByForeignKeys(ofType, tableDependencies));
+                    } else if (type == DbObjectType.VIEW && ofType.stream().allMatch(v -> v.definition() != null)) {
+                        ordered.addAll(sortViewsByDependency(ofType, extractViewDependenciesFromSQL(ofType)));
+                    } else {
+                        ordered.addAll(ofType);
+                    }
+                });
+        return ordered;
+    }
+
+    /**
+     * Foreign keys between user tables in the current database, as
+     * "schema.table" -> referenced "schema.table" (lower case).
+     */
+    private Map<String, List<String>> currentForeignKeys() {
+        Map<String, List<String>> result = new HashMap<>();
+        jdbcTemplate.query("""
+                SELECT LOWER(SCHEMA_NAME(p.schema_id) + '.' + p.name) AS parent_table,
+                       LOWER(SCHEMA_NAME(r.schema_id) + '.' + r.name) AS referenced_table
+                FROM sys.foreign_keys fk
+                JOIN sys.tables p ON fk.parent_object_id = p.object_id
+                JOIN sys.tables r ON fk.referenced_object_id = r.object_id
+                WHERE fk.parent_object_id <> fk.referenced_object_id
+                """, rs -> {
+            result.computeIfAbsent(rs.getString("parent_table"), k -> new ArrayList<>())
+                    .add(rs.getString("referenced_table"));
+        });
+        return result;
     }
 
     /**
      * Orders tables by foreign key dependencies using topological sort.
      * Tables without foreign keys come first, then tables that reference them.
      */
-    private List<DbObject> orderTablesByForeignKeys(List<DbObject> tables) {
+    private List<DbObject> orderTablesByForeignKeys(List<DbObject> tables,
+                                                    java.util.function.Function<DbObject, List<String>> tableDependencies) {
         // Build dependency map: table -> list of tables it depends on (via FK)
         Map<String, List<String>> dependencies = new HashMap<>();
-        Map<String, DbObject> tableMap = new HashMap<>();
+        Map<String, DbObject> tableMap = new java.util.LinkedHashMap<>();
 
         for (DbObject table : tables) {
             String tableKey = table.schema() + "." + table.name();
             tableMap.put(tableKey, table);
-            dependencies.put(tableKey, extractForeignKeyDependencies(table));
+            dependencies.put(tableKey, tableDependencies.apply(table));
         }
 
         // Topological sort
@@ -1265,16 +1262,18 @@ public class MSSQLDatabaseService implements DatabaseService {
      * Returns the dependency priority for a database object type.
      * Lower numbers are processed first.
      */
-    private int getDependencyPriority(DbObjectType type) {
+    int getDependencyPriority(DbObjectType type) {
         return switch (type) {
-            case FULLTEXT_CATALOG -> 0;             // Full-Text catalogs must be created before tables/indexes
-            case TABLE -> 1;                        // Tables first (handled separately with FK ordering)
-            case SCALAR_TYPE, TABLE_TYPE -> 2;      // Types before functions that might use them
-            case SEQUENCE -> 3;                     // Sequences are standalone
-            case SYNONYM -> 4;                      // Synonyms reference other objects
-            case FUNCTION, PROCEDURE -> 5;          // Functions & Procedures depend on tables
-            case VIEW -> 6;                         // Views depend on tables and functions
-            case TRIGGER -> 7;                      // Triggers depend on tables
+            case FULLTEXT_CATALOG -> 0;  // Full-text catalogs before the tables whose indexes use them
+            case SCALAR_TYPE -> 1;       // Scalar types before table types, tables and modules that use them
+            case TABLE_TYPE -> 2;        // Table types may use scalar types
+            case SEQUENCE -> 3;          // Sequences before tables whose defaults use NEXT VALUE FOR
+            case TABLE -> 4;             // Tables (sorted by foreign keys)
+            case SYNONYM -> 5;           // Synonyms usually point at tables
+            case FUNCTION -> 6;          // Functions depend on tables; views often use them
+            case VIEW -> 7;              // Views depend on tables, functions and other views (sorted)
+            case PROCEDURE -> 8;         // Procedures may use all of the above
+            case TRIGGER -> 9;           // Triggers last: on tables or views (INSTEAD OF)
         };
     }
 

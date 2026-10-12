@@ -9,8 +9,7 @@ description: T-SQL DDL conventions and dependency ordering rules for SQL Server 
 
 The order lives in one place: `MSSQLDatabaseService.orderByDependency` / `getDependencyPriority`, documented in `docs/architecture.md` (Applying Changes). When you change it, update that section; don't copy the list elsewhere.
 
-Current order: tables (FK-sorted) → full-text catalogs → scalar and table types → sequences → synonyms → functions and procedures → triggers → views (sorted by view references).
-Known problem: types should come before tables, and views before triggers that use them.
+Current order for creates/updates: full-text catalogs → scalar types → table types → sequences → tables (FK-sorted) → synonyms → functions → views (sorted by view references) → procedures → triggers. Drops run after all creates/updates, in the reverse order.
 
 ## SQL Equivalence Checking
 

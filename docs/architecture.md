@@ -133,17 +133,19 @@ Definitions are compared after normalization, so cosmetic differences don't coun
 
 ## Applying Changes
 
-**Order:** changes are applied in this order:
-1. Tables, sorted by foreign keys so referenced tables come first
-2. Full-text catalogs
-3. Scalar and table types
-4. Sequences
-5. Synonyms
-6. Functions and procedures
-7. Triggers
+**Order:** missing schemas are created first. Then creates and updates run in this order:
+1. Full-text catalogs
+2. Scalar types
+3. Table types
+4. Sequences (before tables whose defaults use them)
+5. Tables, sorted by foreign keys so referenced tables come first
+6. Synonyms
+7. Functions
 8. Views, sorted by references between the views being applied
+9. Procedures
+10. Triggers (on tables, or `INSTEAD OF` on views)
 
-Missing schemas are created first.
+Drops run last, in the reverse order. Dependent objects go first: for example, a schema-bound view before its table, and a referencing table before the table it references (foreign keys for dropped tables are read from the database).
 
 **How each type is applied:**
 
@@ -205,7 +207,6 @@ To see which commit a database is on, run `git rev-parse orders_prod` or `git lo
 ## Known Limitations
 
 - Tags are not prefixed with `prefix-path`. Two deployments sharing a repository with the same database name share a tag.
-- Tables are applied before user-defined types, and views after triggers. A new table using a new type, or a new trigger on a new view, can fail when both arrive in the same sync.
 - Indexes are written without `CLUSTERED` / `COLUMNSTORE` / XML / spatial keywords, so those index types are recreated as regular indexes.
 - Table changes are partial: see [Table changes](#applying-changes). In particular, changing a primary key drops the foreign keys that reference it.
 - Computed columns, full-text indexes, partitioning, indexed views, CLR objects and database-level objects (users, roles, permissions) are not managed. See [MSSQL_FEATURES_SUPPORT.md](MSSQL_FEATURES_SUPPORT.md).
