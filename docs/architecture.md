@@ -171,23 +171,24 @@ Drops run last, in the reverse order. Dependent objects go first: for example, a
 
 **Table changes:**
 
-| Change | Statement | Data |
+The current table is read with the same code that produces repository definitions, then compared with the Git definition:
+
+| Change | Statements | Data |
 |---|---|---|
-| Add column | `ALTER TABLE ADD` | kept |
-| Change type / nullability | `ALTER TABLE ALTER COLUMN` (dependent indexes dropped and recreated) | kept, or the statement fails if values don't convert |
-| Remove column | `ALTER TABLE DROP COLUMN` (dependent constraints dropped first) | **lost**, needs `allowDataLoss` |
+| Add column | `ALTER TABLE ADD` (with its default) | kept |
+| Change type / nullability | `ALTER COLUMN`; the column's indexes, constraints and default are dropped first and re-created after | kept, or the statement fails if values don't convert |
+| Remove column | `DROP COLUMN` (its constraints and indexes dropped first) | **lost**, needs `allowDataLoss` |
 | Rename column | seen as remove + add | **lost**, needs `allowDataLoss` |
 | All data columns replaced | table dropped and recreated | **lost**, needs `allowDataLoss` |
-| Primary key change | constraint dropped and re-added; foreign keys referencing it are dropped and **not** re-created | kept |
-| New check constraint | `ALTER TABLE ADD` | kept |
-| Indexes | all indexes in the definition are dropped (if present) and recreated | kept |
+| Primary key change (columns, name or clustering) | dropped and re-added; foreign keys of other tables that reference it are re-added afterwards | kept |
+| Unique, foreign key or check constraint added / removed / changed | `ADD CONSTRAINT` / `DROP CONSTRAINT` (a changed one is dropped and re-added) | kept |
+| Column default added / removed / changed | `ADD DEFAULT ... FOR` / `DROP CONSTRAINT` | kept |
+| Index added / removed / changed | `CREATE INDEX` / `DROP INDEX` (a changed one is dropped and re-created); unchanged indexes are left alone | kept |
 | Identity change | not applied; a warning is logged | — |
 
-**Not applied to existing tables:**
-- added or removed foreign keys and unique constraints
-- removed check constraints
-- removed indexes
-- changed column defaults
+Statements run in this order: drops of removed/changed constraints, defaults and indexes; column and primary key statements; then adds. Constraints are compared by name. Expressions are compared ignoring case, brackets, whitespace and the parentheses SQL Server adds.
+
+A re-added foreign key is checked against existing rows. If rows violate it, the sync fails for that database and nothing changes.
 
 Renames are not detected. Do them by hand, then run db-to-repo.
 
@@ -224,7 +225,7 @@ A tag can't share its name with another tag's namespace: a deployment without a 
 ## Known Limitations
 
 - XML, spatial and memory-optimized indexes are not managed.
-- Table changes are partial: see [Table changes](#applying-changes). In particular, changing a primary key drops the foreign keys that reference it.
+- Changing a column that other tables' foreign keys reference (e.g. its type) fails; change those tables by hand.
 - Computed columns, full-text indexes, partitioning, indexed views, CLR objects and database-level objects (users, roles, permissions) are not managed. See [MSSQL_FEATURES_SUPPORT.md](MSSQL_FEATURES_SUPPORT.md).
 
 ## See Also

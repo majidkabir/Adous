@@ -374,10 +374,10 @@ class TableAlterScriptGeneratorTest {
 
             // Assert
             assertNotNull(alterScript);
-            assertTrue(alterScript.contains("DROP CONSTRAINT [pk_test_users]"),
+            assertTrue(alterScript.contains("DROP CONSTRAINT IF EXISTS [pk_test_users]"),
                     "Should drop existing primary key. Actual script: " + alterScript);
-            assertTrue(alterScript.contains("ADD CONSTRAINT [pk_test_users] PRIMARY KEY ([id], [username])"),
-                    "Should add new composite primary key");
+            assertTrue(alterScript.toLowerCase().contains("add constraint [pk_test_users] primary key ([id], [username])"),
+                    "Should add new composite primary key. Actual script: " + alterScript);
         }
     }
 
@@ -555,7 +555,8 @@ class TableAlterScriptGeneratorTest {
                         [user_id] int NOT NULL,
                         [amount] decimal(10,2) NOT NULL,
                         [status] nvarchar(50) NULL,
-                        CONSTRAINT [PK_test_orders] PRIMARY KEY ([id])
+                        CONSTRAINT [PK_test_orders] PRIMARY KEY ([id]),
+                        CONSTRAINT [FK_test_orders_users] FOREIGN KEY ([user_id]) REFERENCES [dbo].[test_users] ([id])
                     );
                     GO
                     """;
@@ -564,6 +565,7 @@ class TableAlterScriptGeneratorTest {
 
             // Act
             String alterScript = alterScriptGenerator.generateAlterScript(tableObject);
+            assertFalse(alterScript.contains("FK_test_orders_users"), "an unchanged foreign key is left alone: " + alterScript);
             executeSql(alterScript);
 
             // Assert
