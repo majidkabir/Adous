@@ -1,0 +1,214 @@
+package app.majid.adous.db.service;
+
+import app.majid.adous.synchronizer.model.DbObject;
+import app.majid.adous.synchronizer.model.DbObjectType;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.testcontainers.containers.MSSQLServerContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Changes to constraints, defaults and indexes of existing tables: each test edits the
+ * extracted definition, applies it, and checks the database and the re-extracted definition.
+ */
+@Testcontainers
+class TableConstraintChangesTest {
+
+    @Container
+    static MSSQLServerContainer<?> mssqlServer =
+            new MSSQLServerContainer<>("mcr.microsoft.com/mssql/server:2022-latest")
+                    .acceptLicense();
+
+    private static HikariDataSource dataSource;
+    private static JdbcTemplate jdbcTemplate;
+    private static MSSQLDatabaseService databaseService;
+    private static TableAlterScriptGenerator generator;
+
+    @BeforeAll
+    static void initAll() {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(mssqlServer.getJdbcUrl());
+        config.setUsername(mssqlServer.getUsername());
+        config.setPassword(mssqlServer.getPassword());
+        config.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        config.setMaximumPoolSize(5);
+        dataSource = new HikariDataSource(config);
+        jdbcTemplate = new JdbcTemplate(dataSource);
+        generator = new TableAlterScriptGenerator(jdbcTemplate);
+        databaseService = new MSSQLDatabaseService(jdbcTemplate, generator, new SequenceAlterScriptGenerator(jdbcTemplate));
+        ReflectionTestUtils.setField(databaseService, "defaultSchema", "dbo");
+    }
+
+    @AfterAll
+    static void tearDownAll() {
+        dataSource.close();
+    }
+
+    @BeforeEach
+    void createTables() {
+        jdbcTemplate.execute("""
+                CREATE TABLE dbo.tc_customer (
+                    id int NOT NULL CONSTRAINT PK_tc_customer PRIMARY KEY,
+                    email varchar(100) NULL)
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE dbo.tc_order (
+                    id int NOT NULL CONSTRAINT PK_tc_order PRIMARY KEY,
+                    customer_id int NULL,
+                    qty int NOT NULL CONSTRAINT DF_tc_order_qty DEFAULT (1),
+                    note varchar(20) NULL,
+                    CONSTRAINT CK_tc_order_qty CHECK (qty > 0))
+                """);
+        jdbcTemplate.execute("INSERT INTO dbo.tc_customer (id, email) VALUES (1, 'a@x'), (2, 'b@x')");
+        jdbcTemplate.execute("INSERT INTO dbo.tc_order (id, customer_id, qty) VALUES (10, 1, 3)");
+    }
+
+    @AfterEach
+    void cleanup() {
+        jdbcTemplate.execute("DROP TABLE IF EXISTS dbo.tc_order");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS dbo.tc_customer");
+    }
+
+    @Test
+    void shouldGenerateNothingForUnchangedTable() {
+        assertEquals("", generator.generateAlterScript(table("tc_order", definition("tc_order"))));
+    }
+
+    @Test
+    void shouldAddAndRemoveForeignKeyWithReferentialAction() {
+        String withFk = addClause(definition("tc_order"),
+                "CONSTRAINT [FK_tc_order_customer] FOREIGN KEY ([customer_id]) REFERENCES [dbo].[tc_customer] ([id]) ON DELETE CASCADE");
+
+        apply("tc_order", withFk);
+        assertEquals("CASCADE", jdbcTemplate.queryForObject(
+                "SELECT delete_referential_action_desc FROM sys.foreign_keys WHERE name = 'FK_tc_order_customer'", String.class));
+        assertTrue(definition("tc_order").contains("REFERENCES [dbo].[tc_customer] ([id]) ON DELETE CASCADE"),
+                "extraction must include ON DELETE CASCADE");
+        assertEquals("", generator.generateAlterScript(table("tc_order", withFk)), "nothing left to change");
+
+        apply("tc_order", withFk.replace(",\n    CONSTRAINT [FK_tc_order_customer] FOREIGN KEY ([customer_id]) REFERENCES [dbo].[tc_customer] ([id]) ON DELETE CASCADE", ""));
+        assertEquals(0, count("SELECT COUNT(*) FROM sys.foreign_keys WHERE name = 'FK_tc_order_customer'"));
+    }
+
+    @Test
+    void shouldAddAndRemoveUniqueConstraint() {
+        String withUnique = addClause(definition("tc_customer"), "CONSTRAINT [UQ_tc_customer_email] UNIQUE ([email])");
+
+        apply("tc_customer", withUnique);
+        assertEquals(1, count("SELECT COUNT(*) FROM sys.key_constraints WHERE name = 'UQ_tc_customer_email'"));
+
+        apply("tc_customer", withUnique.replace(",\n    CONSTRAINT [UQ_tc_customer_email] UNIQUE ([email])", ""));
+        assertEquals(0, count("SELECT COUNT(*) FROM sys.key_constraints WHERE name = 'UQ_tc_customer_email'"));
+    }
+
+    @Test
+    void shouldChangeAndRemoveCheckConstraint() {
+        String original = definition("tc_order");
+        String changed = original.replace("CHECK ([qty]>(0))", "CHECK ([qty]>(0) AND [qty]<(100))");
+        assertNotEquals(original, changed, "test setup: CHECK clause format");
+
+        apply("tc_order", changed);
+        assertTrue(jdbcTemplate.queryForObject(
+                "SELECT definition FROM sys.check_constraints WHERE name = 'CK_tc_order_qty'", String.class).contains("100"));
+
+        apply("tc_order", changed.replace(",\n    CONSTRAINT [CK_tc_order_qty] CHECK ([qty]>(0) AND [qty]<(100))", ""));
+        assertEquals(0, count("SELECT COUNT(*) FROM sys.check_constraints WHERE name = 'CK_tc_order_qty'"));
+    }
+
+    @Test
+    void shouldChangeAddAndRemoveDefaults() {
+        String original = definition("tc_order");
+        String changed = original
+                .replace("[qty] int NOT NULL DEFAULT ((1))", "[qty] int NOT NULL DEFAULT ((5))")
+                .replace("[note] varchar(20) NULL", "[note] varchar(20) NULL DEFAULT ('n/a')");
+        assertNotEquals(original, changed, "test setup: column format");
+
+        apply("tc_order", changed);
+        jdbcTemplate.execute("INSERT INTO dbo.tc_order (id) VALUES (11)");
+        assertEquals(5, jdbcTemplate.queryForObject("SELECT qty FROM dbo.tc_order WHERE id = 11", Integer.class));
+        assertEquals("n/a", jdbcTemplate.queryForObject("SELECT note FROM dbo.tc_order WHERE id = 11", String.class));
+        assertEquals("", generator.generateAlterScript(table("tc_order", changed)), "nothing left to change");
+
+        apply("tc_order", changed.replace(" DEFAULT ('n/a')", ""));
+        assertEquals(0, count("""
+                SELECT COUNT(*) FROM sys.default_constraints
+                WHERE parent_object_id = OBJECT_ID('dbo.tc_order') AND COL_NAME(parent_object_id, parent_column_id) = 'note'
+                """));
+    }
+
+    @Test
+    void shouldAddAndDropIndexWithoutOtherChanges() {
+        String withIndex = definition("tc_order") + "CREATE INDEX [ix_tc_order_note] ON [dbo].[tc_order] ([note]);\nGO\n";
+
+        apply("tc_order", withIndex);
+        assertEquals(1, count("SELECT COUNT(*) FROM sys.indexes WHERE name = 'ix_tc_order_note'"));
+        assertEquals(withIndex, definition("tc_order"));
+
+        apply("tc_order", withIndex.replace("CREATE INDEX [ix_tc_order_note] ON [dbo].[tc_order] ([note]);\nGO\n", ""));
+        assertEquals(0, count("SELECT COUNT(*) FROM sys.indexes WHERE name = 'ix_tc_order_note'"));
+    }
+
+    @Test
+    void shouldAlterColumnThatHasCheckDefaultAndIndex() {
+        String original = definition("tc_order") + "CREATE INDEX [ix_tc_order_qty] ON [dbo].[tc_order] ([qty]);\nGO\n";
+        apply("tc_order", original);
+
+        String widened = original.replace("[qty] int NOT NULL", "[qty] bigint NOT NULL");
+        apply("tc_order", widened);
+
+        assertEquals("bigint", jdbcTemplate.queryForObject(
+                "SELECT TYPE_NAME(user_type_id) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.tc_order') AND name = 'qty'", String.class));
+        assertEquals(widened, definition("tc_order"), "check, default and index must be back");
+    }
+
+    @Test
+    void shouldReaddForeignKeysOfOtherTablesWhenPrimaryKeyIsRecreated() {
+        jdbcTemplate.execute("""
+                ALTER TABLE dbo.tc_order ADD CONSTRAINT FK_tc_order_customer
+                    FOREIGN KEY (customer_id) REFERENCES dbo.tc_customer (id)
+                """);
+        String orderBefore = definition("tc_order");
+
+        // Same key column, but the primary key becomes nonclustered: dropped and re-added
+        apply("tc_customer", definition("tc_customer").replace("PRIMARY KEY ([id])", "PRIMARY KEY NONCLUSTERED ([id])")
+                .replace("CONSTRAINT [PK_tc_customer]", "CONSTRAINT [PK_tc_customer2]"));
+
+        assertEquals(1, count("SELECT COUNT(*) FROM sys.foreign_keys WHERE name = 'FK_tc_order_customer'"));
+        assertEquals(orderBefore, definition("tc_order"));
+    }
+
+    private static String addClause(String definition, String clause) {
+        int end = definition.indexOf("\n);");
+        return definition.substring(0, end) + ",\n    " + clause + definition.substring(end);
+    }
+
+    private static void apply(String name, String definition) {
+        databaseService.applyChangesToDatabase(List.of(table(name, definition)));
+    }
+
+    private static DbObject table(String name, String definition) {
+        return new DbObject("dbo", name, DbObjectType.TABLE, definition);
+    }
+
+    private static String definition(String name) {
+        return databaseService.getDbObjects().stream()
+                .filter(o -> o.type() == DbObjectType.TABLE && o.name().equals(name))
+                .findFirst().orElseThrow().definition();
+    }
+
+    private static int count(String sql) {
+        return jdbcTemplate.queryForObject(sql, Integer.class);
+    }
+}

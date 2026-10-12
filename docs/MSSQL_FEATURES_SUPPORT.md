@@ -15,7 +15,7 @@ This document categorizes SQL Server database objects and features, identifying 
 These SQL Server features are fully implemented and operational in Adous.
 
 ### 1. **Tables**
-- **Status:** ✅ Supported (some changes to existing tables are not applied, see below)
+- **Status:** ✅ Fully Supported
 - **Implementation:**
   - Column definitions with data types
   - IDENTITY properties
@@ -23,11 +23,11 @@ These SQL Server features are fully implemented and operational in Adous.
   - Default values (inline, unnamed)
   - Primary key constraints
   - Unique constraints
-  - Foreign key constraints (with FK dependency tracking)
+  - Foreign key constraints, including `ON DELETE` / `ON UPDATE` actions (with FK dependency tracking)
   - Check constraints
   - Indexes: clustered and nonclustered (unique, filtered, `INCLUDE` columns, descending keys), clustered and nonclustered columnstore; nonclustered primary keys. XML, spatial and memory-optimized indexes are not managed.
 - **Method:** Extract via `sys.tables`, `sys.columns`, `sys.indexes`, `sys.foreign_keys`, `sys.constraints`
-- **Application:** New tables are created. Existing tables get `ALTER TABLE` statements, and dropping a column or table needs `allowDataLoss`. Added or removed foreign keys and unique constraints, removed check constraints and indexes, and changed column defaults are **not** applied to existing tables. See [Table changes](architecture.md#applying-changes).
+- **Application:** New tables are created. Existing tables get `ALTER TABLE` statements for columns, the primary key, unique / foreign key / check constraints, column defaults and indexes. Dropping a column or table needs `allowDataLoss`. Foreign keys keep their `ON DELETE` / `ON UPDATE` actions. See [Table changes](architecture.md#applying-changes).
 
 ### 2. **Stored Procedures**
 - **Status:** ✅ Fully Supported
@@ -316,7 +316,7 @@ These SQL Server features CANNOT be supported by Adous due to architectural or t
 
 | Feature | Status | Difficulty | Priority | Notes |
 |---------|--------|-----------|----------|-------|
-| **Tables** | ✅ Yes | - | - | Some changes to existing tables not applied (FKs, unique, defaults) |
+| **Tables** | ✅ Yes | - | - | Columns, constraints (incl. FK actions), defaults, indexes |
 | **Stored Procedures** | ✅ Yes | - | - | With SET options |
 | **Scalar Functions** | ✅ Yes | - | - | T-SQL only |
 | **Table-Valued Functions** | ✅ Yes | - | - | Inline and multi-statement |

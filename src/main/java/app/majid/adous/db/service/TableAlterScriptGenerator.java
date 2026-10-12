@@ -23,9 +23,19 @@ public class TableAlterScriptGenerator {
     private static final Logger logger = LoggerFactory.getLogger(TableAlterScriptGenerator.class);
 
     private final JdbcTemplate jdbcTemplate;
+    private final TableDefinitionReader tableDefinitionReader;
 
     public TableAlterScriptGenerator(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
+        this.tableDefinitionReader = new TableDefinitionReader(jdbcTemplate);
+    }
+
+    /** What the column/PK statements dropped, so it can be re-created afterwards. */
+    private static final class AlterContext {
+        final Set<String> droppedIndexes = new HashSet<>();                  // lower-case names
+        final List<String[]> droppedReferencingForeignKeys = new ArrayList<>(); // [schema, table, fk name]
+        boolean recreated;                                                   // whole table dropped and recreated
+        boolean primaryKeyClauseChanged;                                     // e.g. renamed or clustered -> nonclustered
     }
 
     /**
@@ -36,46 +46,296 @@ public class TableAlterScriptGenerator {
      * @return SQL script (CREATE or ALTER statements) to apply to database
      */
     public String generateAlterScript(DbObject tableObject) {
-        logger.debug("Generating alter script for table {}.{}", tableObject.schema(), tableObject.name());
+        String schema = tableObject.schema();
+        String name = tableObject.name();
+        logger.debug("Generating alter script for table {}.{}", schema, name);
 
-        // Check if table exists in database
-        if (!tableExists(tableObject.schema(), tableObject.name())) {
-            logger.debug("Table {}.{} doesn't exist, using CREATE TABLE script",
-                    tableObject.schema(), tableObject.name());
+        Optional<TableDefinitionReader.TableModel> current = tableDefinitionReader.read(schema, name);
+        if (current.isEmpty()) {
+            logger.debug("Table {}.{} doesn't exist, using CREATE TABLE script", schema, name);
             return tableObject.definition();
         }
 
-        // Parse Git definition to extract table structure
-        TableDefinition gitDefinition = parseCreateTableDefinition(tableObject.definition());
+        String gitText = tableObject.definition();
+        TableDefinition gitDefinition = parseCreateTableDefinition(gitText);
+        TableDefinition dbDefinition = getCurrentTableDefinition(schema, name);
 
-        // Get current database table structure
-        TableDefinition dbDefinition = getCurrentTableDefinition(tableObject.schema(), tableObject.name());
+        AlterContext ctx = new AlterContext();
+        String dbPkClause = current.get().constraints().stream()
+                .filter(c -> c.kind() == TableDefinitionReader.ConstraintKind.PRIMARY_KEY)
+                .map(TableDefinitionReader.Constraint::clause).findFirst().orElse(null);
+        String gitPkClause = parseNamedConstraints(gitText).values().stream()
+                .filter(clause -> PRIMARY_KEY_CLAUSE.matcher(clause).find()).findFirst().orElse(null);
+        ctx.primaryKeyClauseChanged = dbPkClause != null && gitPkClause != null && !sameSql(dbPkClause, gitPkClause);
 
-        // Generate ALTER statements
-        List<String> alterStatements = generateAlterStatements(tableObject.schema(), tableObject.name(),
-                dbDefinition, gitDefinition, tableObject.definition());
+        List<String> alterStatements = generateAlterStatements(schema, name, dbDefinition, gitDefinition, gitText, ctx);
 
-        if (alterStatements.isEmpty()) {
-            logger.debug("No changes needed for table {}.{}", tableObject.schema(), tableObject.name());
-            return ""; // No changes needed
+        List<String> statements = new ArrayList<>();
+        if (ctx.recreated) {
+            // DROP TABLE + the full Git definition (columns, constraints, indexes)
+            statements.addAll(alterStatements);
+        } else {
+            ObjectChanges changes = diffConstraintsDefaultsAndIndexes(
+                    schema, name, current.get(), gitText, dbDefinition, gitDefinition, ctx);
+            statements.addAll(changes.before());
+            statements.addAll(alterStatements);
+            statements.addAll(changes.after());
+        }
+        statements.addAll(readdReferencingForeignKeys(schema, name, ctx));
+
+        if (statements.isEmpty()) {
+            logger.debug("No changes needed for table {}.{}", schema, name);
+            return "";
         }
 
         StringBuilder script = new StringBuilder();
-        alterStatements.forEach(stmt -> script.append(stmt).append("\nGO\n"));
+        statements.forEach(stmt -> script.append(stmt).append("\nGO\n"));
+        return script.toString();
+    }
 
-        // Extract and append CREATE INDEX statements from Git definition
-        // These will recreate any indexes that were dropped during column alterations
-        List<String> indexStatements = extractIndexStatements(tableObject.definition());
-        if (!indexStatements.isEmpty()) {
-            logger.debug("Adding {} index recreation statements for table {}.{}",
-                    indexStatements.size(), tableObject.schema(), tableObject.name());
-            indexStatements.forEach(stmt -> script.append(stmt).append("\nGO\n"));
+    private record ObjectChanges(List<String> before, List<String> after) {
+    }
+
+    /**
+     * Compares the named constraints (UNIQUE, FOREIGN KEY, CHECK), column defaults and indexes
+     * of the database table with the Git definition.
+     * <ul>
+     *   <li>{@code before}: drop what was removed or changed, and what blocks an ALTER COLUMN
+     *       (constraints and defaults on altered columns); runs before the column statements.</li>
+     *   <li>{@code after}: add what is new or changed, and re-create what was dropped above
+     *       or by the column statements (indexes on altered columns).</li>
+     * </ul>
+     */
+    private ObjectChanges diffConstraintsDefaultsAndIndexes(String schema, String name,
+                                                            TableDefinitionReader.TableModel current, String gitText,
+                                                            TableDefinition dbDef, TableDefinition gitDef,
+                                                            AlterContext ctx) {
+        List<String> before = new ArrayList<>();
+        List<String> after = new ArrayList<>();
+        String table = "[%s].[%s]".formatted(schema, name);
+
+        Set<String> alteredColumns = new HashSet<>();
+        for (Map.Entry<String, ColumnDefinition> entry : gitDef.columns.entrySet()) {
+            ColumnDefinition dbColumn = dbDef.columns.get(entry.getKey());
+            ColumnDefinition gitColumn = entry.getValue();
+            if (dbColumn != null && !dbColumn.isIdentity && !gitColumn.isIdentity
+                    && (!dbColumn.dataType.equalsIgnoreCase(gitColumn.dataType) || dbColumn.isNullable != gitColumn.isNullable)) {
+                alteredColumns.add(entry.getKey());
+            }
+        }
+        Set<String> selfReferencingDropped = new HashSet<>();
+        for (String[] fk : ctx.droppedReferencingForeignKeys) {
+            if (fk[0].equalsIgnoreCase(schema) && fk[1].equalsIgnoreCase(name)) {
+                selfReferencingDropped.add(fk[2].toLowerCase());
+            }
         }
 
-        logger.debug("Generated {} ALTER statements and {} index statements for table {}.{}",
-                alterStatements.size(), indexStatements.size(), tableObject.schema(), tableObject.name());
+        // Named UNIQUE / FOREIGN KEY / CHECK constraints (the primary key is handled by the column statements)
+        Map<String, String> gitConstraints = parseNamedConstraints(gitText);
+        Map<String, TableDefinitionReader.Constraint> dbConstraints = new LinkedHashMap<>();
+        for (TableDefinitionReader.Constraint constraint : current.constraints()) {
+            if (constraint.kind() != TableDefinitionReader.ConstraintKind.PRIMARY_KEY) {
+                dbConstraints.put(constraint.name().toLowerCase(), constraint);
+            }
+        }
+        gitConstraints.keySet().removeIf(key -> PRIMARY_KEY_CLAUSE.matcher(gitConstraints.get(key)).find());
 
-        return script.toString();
+        List<String> addConstraints = new ArrayList<>();
+        List<String> addForeignKeys = new ArrayList<>();
+        dbConstraints.forEach((key, constraint) -> {
+            String gitClause = gitConstraints.get(key);
+            boolean blocksAlter = referencesAny(constraint.clause(), alteredColumns);
+            boolean droppedForPrimaryKey = selfReferencingDropped.contains(constraint.dbName().toLowerCase());
+            boolean changed = gitClause == null || !sameSql(gitClause, constraint.clause());
+            if (changed || blocksAlter) {
+                before.add("ALTER TABLE %s DROP CONSTRAINT IF EXISTS [%s];".formatted(table, constraint.dbName()));
+            }
+            if (gitClause != null && (changed || blocksAlter || droppedForPrimaryKey)) {
+                (isForeignKey(gitClause) ? addForeignKeys : addConstraints)
+                        .add("ALTER TABLE %s ADD %s;".formatted(table, gitClause));
+            }
+        });
+        gitConstraints.forEach((key, clause) -> {
+            if (!dbConstraints.containsKey(key)) {
+                (isForeignKey(clause) ? addForeignKeys : addConstraints)
+                        .add("ALTER TABLE %s ADD %s;".formatted(table, clause));
+            }
+        });
+
+        // Column defaults (columns added or dropped get theirs with the column statement)
+        Map<String, TableDefinitionReader.Column> dbColumns = new HashMap<>();
+        current.columns().forEach(c -> dbColumns.put(c.name().toLowerCase(), c));
+        for (Map.Entry<String, ColumnDefinition> entry : gitDef.columns.entrySet()) {
+            TableDefinitionReader.Column dbColumn = dbColumns.get(entry.getKey());
+            ColumnDefinition gitColumn = entry.getValue();
+            if (dbColumn == null || gitColumn.isIdentity) {
+                continue;
+            }
+            String gitDefault = gitColumn.defaultValue;
+            String dbDefault = dbColumn.defaultValue();
+            boolean altered = alteredColumns.contains(entry.getKey());
+            boolean same = gitDefault != null && dbDefault != null && sameSql(gitDefault, dbDefault);
+            if (dbDefault != null && (!same || altered)) {
+                before.add("ALTER TABLE %s DROP CONSTRAINT IF EXISTS [%s];".formatted(table, dbColumn.defaultName()));
+            }
+            if (gitDefault != null && (!same || altered)) {
+                addConstraints.add("ALTER TABLE %s ADD DEFAULT %s FOR [%s];".formatted(table, gitDefault, gitColumn.originalName));
+            }
+        }
+
+        after.addAll(addConstraints);
+        after.addAll(addForeignKeys);
+
+        // Indexes
+        Map<String, String> gitIndexes = parseIndexStatements(gitText);
+        Map<String, String> dbIndexes = new LinkedHashMap<>();
+        current.indexes().forEach(i -> dbIndexes.put(i.name().toLowerCase(), i.statement()));
+        dbIndexes.forEach((key, statement) -> {
+            if (!gitIndexes.containsKey(key)) {
+                before.add("DROP INDEX IF EXISTS [%s] ON %s;".formatted(dbIndexName(current, key), table));
+            }
+        });
+        gitIndexes.forEach((key, statement) -> {
+            String dbStatement = dbIndexes.get(key);
+            if (dbStatement == null || !sameSql(dbStatement, statement) || ctx.droppedIndexes.contains(key)) {
+                after.add("DROP INDEX IF EXISTS [%s] ON %s;".formatted(indexNameIn(statement), table));
+                after.add(statement);
+            }
+        });
+
+        return new ObjectChanges(before, after);
+    }
+
+    /**
+     * Re-creates foreign keys of other tables that were dropped because this table's primary
+     * key changed or the table was recreated. Their definitions are read before the script runs.
+     */
+    private List<String> readdReferencingForeignKeys(String schema, String name, AlterContext ctx) {
+        List<String> statements = new ArrayList<>();
+        Map<String, Optional<TableDefinitionReader.TableModel>> parents = new HashMap<>();
+        for (String[] fk : ctx.droppedReferencingForeignKeys) {
+            if (fk[0].equalsIgnoreCase(schema) && fk[1].equalsIgnoreCase(name)) {
+                continue; // self-reference: re-created from this table's own definition
+            }
+            Optional<TableDefinitionReader.TableModel> parent = parents.computeIfAbsent(
+                    fk[0] + "." + fk[1], k -> tableDefinitionReader.read(fk[0], fk[1]));
+            parent.flatMap(model -> model.constraints().stream()
+                            .filter(c -> c.dbName().equalsIgnoreCase(fk[2]))
+                            .findFirst())
+                    .ifPresent(c -> statements.add("ALTER TABLE [%s].[%s] ADD %s;".formatted(fk[0], fk[1], c.clause())));
+        }
+        return statements;
+    }
+
+    private static final Pattern PRIMARY_KEY_CLAUSE = Pattern.compile("^CONSTRAINT\\s+\\S+\\s+PRIMARY\\s+KEY\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern NAMED_CONSTRAINT = Pattern.compile(
+            "^CONSTRAINT\\s+\\[?([^\\]\\s]+)\\]?\\s+(?:PRIMARY\\s+KEY|UNIQUE|FOREIGN\\s+KEY|CHECK)\\b",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern INDEX_STATEMENT = Pattern.compile(
+            "(CREATE\\s+(?:UNIQUE\\s+)?(?:(?:CLUSTERED|NONCLUSTERED)\\s+)?(?:COLUMNSTORE\\s+)?INDEX\\s+\\[([^\\]]+)\\][^;]*;)",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
+    private static boolean isForeignKey(String clause) {
+        return clause.toUpperCase().matches("(?s).*\\bFOREIGN\\s+KEY\\b.*");
+    }
+
+    /** Named table-level constraints in a CREATE TABLE definition: lower-case name -> clause. */
+    Map<String, String> parseNamedConstraints(String createTableSql) {
+        Map<String, String> constraints = new LinkedHashMap<>();
+        String sql = removeSqlComments(createTableSql);
+        int start = sql.indexOf('(', Math.max(0, sql.toUpperCase().indexOf("CREATE TABLE")));
+        if (start < 0) {
+            return constraints;
+        }
+        int depth = 0;
+        int end = -1;
+        for (int i = start; i < sql.length() && end < 0; i++) {
+            char c = sql.charAt(i);
+            if (c == '\'') {
+                i = sql.indexOf('\'', i + 1);
+                if (i < 0) break;
+            } else if (c == '(') {
+                depth++;
+            } else if (c == ')' && --depth == 0) {
+                end = i;
+            }
+        }
+        if (end < 0) {
+            return constraints;
+        }
+        for (String item : splitColumnsSmartly(sql.substring(start + 1, end))) {
+            String clause = item.trim();
+            Matcher matcher = NAMED_CONSTRAINT.matcher(clause);
+            if (matcher.find()) {
+                constraints.put(matcher.group(1).toLowerCase(), clause);
+            }
+        }
+        return constraints;
+    }
+
+    /** Index statements in a definition: lower-case name -> statement. */
+    private static Map<String, String> parseIndexStatements(String definition) {
+        Map<String, String> indexes = new LinkedHashMap<>();
+        Matcher matcher = INDEX_STATEMENT.matcher(definition);
+        while (matcher.find()) {
+            indexes.put(matcher.group(2).toLowerCase(), matcher.group(1).trim());
+        }
+        return indexes;
+    }
+
+    private static String indexNameIn(String statement) {
+        Matcher matcher = INDEX_STATEMENT.matcher(statement);
+        return matcher.find() ? matcher.group(2) : statement;
+    }
+
+    private static String dbIndexName(TableDefinitionReader.TableModel model, String lowerName) {
+        return model.indexes().stream()
+                .map(TableDefinitionReader.Index::name)
+                .filter(n -> n.equalsIgnoreCase(lowerName))
+                .findFirst().orElse(lowerName);
+    }
+
+    private static boolean referencesAny(String clause, Set<String> columns) {
+        for (String column : columns) {
+            if (Pattern.compile("(?i)(\\[" + Pattern.quote(column) + "\\]|\\b" + Pattern.quote(column) + "\\b)")
+                    .matcher(clause).find()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Compares two SQL fragments ignoring case, brackets, whitespace, a trailing semicolon,
+     * and the parentheses SQL Server adds around literals and expressions.
+     */
+    static boolean sameSql(String a, String b) {
+        return normalizeSql(a).equals(normalizeSql(b));
+    }
+
+    private static String normalizeSql(String sql) {
+        String s = sql.toLowerCase().replaceAll("[\\[\\]]", "").replaceAll("\\s+", "").replaceAll(";$", "");
+        String previous;
+        do {
+            previous = s;
+            s = s.replaceAll("\\(\\(([^()]*)\\)\\)", "($1)")              // ((x)) -> (x)
+                 .replaceAll("\\((-?\\d+(?:\\.\\d+)?|'[^']*'|n'[^']*')\\)", "$1"); // (1) -> 1, ('a') -> 'a'
+        } while (!s.equals(previous));
+        // a whole default/check expression wrapped in parentheses
+        while (s.startsWith("(") && s.endsWith(")") && balanced(s.substring(1, s.length() - 1))) {
+            s = s.substring(1, s.length() - 1);
+        }
+        return s;
+    }
+
+    private static boolean balanced(String s) {
+        int depth = 0;
+        for (char c : s.toCharArray()) {
+            if (c == '(') depth++;
+            else if (c == ')' && --depth < 0) return false;
+        }
+        return depth == 0;
     }
 
     /**
@@ -293,7 +553,6 @@ public class TableAlterScriptGenerator {
             String attributesSection = remainder.substring(dataType.length()).trim();
             parseColumnAttributes(column, attributesSection);
 
-
             return column;
         } catch (Exception e) {
             logger.debug("Failed to parse column definition: {}", columnLine, e);
@@ -487,7 +746,8 @@ public class TableAlterScriptGenerator {
      * Generates ALTER statements by comparing database and Git definitions.
      */
     private List<String> generateAlterStatements(String schema, String name,
-                                                  TableDefinition dbDef, TableDefinition gitDef, String gitTableDefinition) {
+                                                  TableDefinition dbDef, TableDefinition gitDef, String gitTableDefinition,
+                                                  AlterContext ctx) {
         List<String> statements = new ArrayList<>();
 
         // Check if we're dropping all data columns - if so, drop the entire table and recreate it
@@ -517,21 +777,24 @@ public class TableAlterScriptGenerator {
                 String fkName = fkInfo[2];
 
                 statements.add(String.format(
-                        "ALTER TABLE [%s].[%s] DROP CONSTRAINT [%s];",
+                        "ALTER TABLE [%s].[%s] DROP CONSTRAINT IF EXISTS [%s];",
                         parentSchema, parentTable, fkName
                 ));
                 logger.debug("Dropping foreign key [{}].[{}] before dropping table [{}].[{}]",
                         parentSchema, fkName, schema, name);
+                ctx.droppedReferencingForeignKeys.add(fkInfo);
             }
 
             statements.add(String.format("DROP TABLE IF EXISTS [%s].[%s];", schema, name));
             statements.add(gitTableDefinition);
+            ctx.recreated = true;
             return statements;
         }
 
         // Drop primary key if it exists and needs modification
-        if (dbDef.primaryKeyName != null &&
-                !dbDef.primaryKeyColumns.equals(gitDef.primaryKeyColumns)) {
+        boolean primaryKeyChanged = !dbDef.primaryKeyColumns.equals(gitDef.primaryKeyColumns)
+                || ctx.primaryKeyClauseChanged;
+        if (dbDef.primaryKeyName != null && primaryKeyChanged) {
             // Before dropping primary key, drop all foreign key constraints that reference it
             List<String[]> referencingForeignKeys = getForeignKeysReferencingPrimaryKey(schema, name);
             for (String[] fkInfo : referencingForeignKeys) {
@@ -540,15 +803,16 @@ public class TableAlterScriptGenerator {
                 String fkName = fkInfo[2];
 
                 statements.add(String.format(
-                        "ALTER TABLE [%s].[%s] DROP CONSTRAINT [%s];",
+                        "ALTER TABLE [%s].[%s] DROP CONSTRAINT IF EXISTS [%s];",
                         parentSchema, parentTable, fkName
                 ));
                 logger.debug("Dropping foreign key [{}].[{}] before dropping primary key [{}]",
                         parentSchema, fkName, dbDef.primaryKeyName);
+                ctx.droppedReferencingForeignKeys.add(fkInfo);
             }
 
             statements.add(String.format(
-                    "ALTER TABLE [%s].[%s] DROP CONSTRAINT [%s];",
+                    "ALTER TABLE [%s].[%s] DROP CONSTRAINT IF EXISTS [%s];",
                     schema, name, dbDef.primaryKeyName
             ));
         }
@@ -563,7 +827,7 @@ public class TableAlterScriptGenerator {
                 List<String> dependentConstraints = getConstraintsDependentOnColumn(schema, name, columnName);
                 for (String constraintName : dependentConstraints) {
                     statements.add(String.format(
-                            "ALTER TABLE [%s].[%s] DROP CONSTRAINT [%s];",
+                            "ALTER TABLE [%s].[%s] DROP CONSTRAINT IF EXISTS [%s];",
                             schema, name, constraintName
                     ));
                     logger.debug("Dropping constraint [{}] before dropping column [{}]", constraintName, originalColumnName);
@@ -607,6 +871,7 @@ public class TableAlterScriptGenerator {
                                     indexName, schema, name
                             ));
                             logger.debug("Dropping index [{}] before altering column [{}]", indexName, gitColumn.originalName);
+                            ctx.droppedIndexes.add(indexName.toLowerCase());
                         }
 
                         String nullability = gitColumn.isNullable ? "NULL" : "NOT NULL";
@@ -628,8 +893,7 @@ public class TableAlterScriptGenerator {
         }
 
         // Add primary key if needed
-        if (!gitDef.primaryKeyColumns.isEmpty() &&
-                !dbDef.primaryKeyColumns.equals(gitDef.primaryKeyColumns)) {
+        if (!gitDef.primaryKeyColumns.isEmpty() && primaryKeyChanged) {
             String pkName = gitDef.primaryKeyName != null ? gitDef.primaryKeyName :
                     String.format("PK_%s_%s", schema, name);
             String columns = gitDef.primaryKeyColumns.stream()
@@ -637,23 +901,13 @@ public class TableAlterScriptGenerator {
                     .reduce((a, b) -> a + ", " + b)
                     .orElse("");
 
-            statements.add(String.format(
-                    "ALTER TABLE [%s].[%s] ADD CONSTRAINT [%s] PRIMARY KEY (%s);",
-                    schema, name, pkName, columns
-            ));
-        }
-
-        // Extract and add CHECK constraints from Git that don't exist in database
-        List<String> gitCheckConstraints = extractCheckConstraints(gitTableDefinition);
-        for (String checkConstraint : gitCheckConstraints) {
-            // Check if this constraint already exists in the database
-            if (!checkConstraintExistsInDatabase(checkConstraint)) {
-                statements.add(String.format(
-                        "ALTER TABLE [%s].[%s] ADD %s;",
-                        schema, name, checkConstraint
-                ));
-                logger.debug("Adding CHECK constraint: {}", checkConstraint);
-            }
+            String gitPkClause = parseNamedConstraints(gitTableDefinition).values().stream()
+                    .filter(clause -> PRIMARY_KEY_CLAUSE.matcher(clause).find())
+                    .findFirst().orElse(null);
+            statements.add(gitPkClause != null
+                    ? String.format("ALTER TABLE [%s].[%s] ADD %s;", schema, name, gitPkClause)
+                    : String.format("ALTER TABLE [%s].[%s] ADD CONSTRAINT [%s] PRIMARY KEY (%s);",
+                            schema, name, pkName, columns));
         }
 
         return statements;
@@ -758,56 +1012,6 @@ public class TableAlterScriptGenerator {
     }
 
     /**
-     * Extracts CREATE INDEX statements from the table definition.
-     * These appear after the CREATE TABLE statement in the Git definition.
-     * Prepends DROP INDEX IF EXISTS for idempotency.
-     *
-     * @param createTableSql Full CREATE TABLE definition from Git
-     * @return List of CREATE INDEX statements (with DROP statements prepended)
-     */
-    private List<String> extractIndexStatements(String createTableSql) {
-        List<String> indexStatements = new ArrayList<>();
-
-        // Pattern to match CREATE INDEX statements with complete capture
-        // Matches: CREATE [UNIQUE] [CLUSTERED|NONCLUSTERED] [COLUMNSTORE] INDEX [name] ON ... WHERE ... ;
-        // We capture the entire statement to preserve exact formatting and WHERE clauses
-        Pattern indexPattern = Pattern.compile(
-                "(CREATE\\s+(?:UNIQUE\\s+)?(?:(?:CLUSTERED|NONCLUSTERED)\\s+)?(?:COLUMNSTORE\\s+)?INDEX\\s+\\[([^\\]]+)\\][^;]*;)",
-                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
-        );
-
-        Matcher matcher = indexPattern.matcher(createTableSql);
-        while (matcher.find()) {
-            String fullIndexStatement = matcher.group(1).trim();
-            String indexName = matcher.group(2);
-
-            // Extract the ON clause to build proper DROP statement
-            // Pattern: ON [schema].[table] or ON schema.table
-            Pattern onPattern = Pattern.compile(
-                    "ON\\s+(\\[[^\\]]+\\]\\.\\[[^\\]]+\\]|[^\\s\\(]+\\.[^\\s\\(]+)",
-                    Pattern.CASE_INSENSITIVE
-            );
-            Matcher onMatcher = onPattern.matcher(fullIndexStatement);
-
-            String dropStatement = "";
-            if (onMatcher.find()) {
-                String onClause = onMatcher.group(1);
-                // Prepend DROP INDEX IF EXISTS for idempotency
-                dropStatement = String.format("DROP INDEX IF EXISTS [%s] ON %s;", indexName, onClause);
-            }
-
-            if (!dropStatement.isEmpty()) {
-                indexStatements.add(dropStatement);
-            }
-            indexStatements.add(fullIndexStatement);
-
-            logger.debug("Extracted index: DROP + CREATE for [{}]", indexName);
-        }
-
-        return indexStatements;
-    }
-
-    /**
      * Gets all indexes that depend on a specific column.
      * This includes indexes where the column is a key column or part of a filtered WHERE clause.
      * These indexes must be dropped before the column can be altered.
@@ -873,66 +1077,6 @@ public class TableAlterScriptGenerator {
         }
 
         return indexes;
-    }
-
-    /**
-     * Extracts CHECK constraints from the table definition.
-     * These are defined in the CREATE TABLE statement as CONSTRAINT clauses.
-     *
-     * @param createTableSql Full CREATE TABLE definition from Git
-     * @return List of CHECK constraint definitions (CONSTRAINT [name] CHECK (...))
-     */
-    private List<String> extractCheckConstraints(String createTableSql) {
-        List<String> constraints = new ArrayList<>();
-
-        // Pattern to match CHECK constraints
-        // Matches: CONSTRAINT [name] CHECK (...)
-        Pattern checkPattern = Pattern.compile(
-                "CONSTRAINT\\s+\\[([^\\]]+)\\]\\s+CHECK\\s*\\(([^)]+)\\)",
-                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
-        );
-
-        Matcher matcher = checkPattern.matcher(createTableSql);
-        while (matcher.find()) {
-            String constraintName = matcher.group(1);
-            String checkCondition = matcher.group(2).trim();
-
-            // Build the full constraint definition
-            String constraintDef = String.format("CONSTRAINT [%s] CHECK (%s)", constraintName, checkCondition);
-            constraints.add(constraintDef);
-
-            logger.debug("Extracted CHECK constraint [{}]: {}", constraintName, constraintDef);
-        }
-
-        return constraints;
-    }
-
-    /**
-     * Checks if a CHECK constraint already exists in the database.
-     *
-     * @param constraintDef Constraint definition (CONSTRAINT [name] CHECK (...))
-     * @return true if constraint exists, false otherwise
-     */
-    private boolean checkConstraintExistsInDatabase(String constraintDef) {
-        // Extract constraint name from the definition
-        Pattern namePattern = Pattern.compile("CONSTRAINT\\s+\\[([^\\]]+)\\]", Pattern.CASE_INSENSITIVE);
-        Matcher matcher = namePattern.matcher(constraintDef);
-
-        if (!matcher.find()) {
-            return false;
-        }
-
-        String constraintName = matcher.group(1).toLowerCase();
-
-        // Query to check if constraint exists
-        String query = """
-                SELECT COUNT(*)
-                FROM sys.check_constraints
-                WHERE name = ?
-                """;
-
-        Integer count = jdbcTemplate.queryForObject(query, Integer.class, constraintName);
-        return count != null && count > 0;
     }
 
     /**
