@@ -343,7 +343,6 @@ class SynchronizationTestsIT {
                         CREATE PROCEDURE proc1 AS BEGIN SELECT 'Procedure 1 UPDATED executed' AS Message; END
                         GO""";
         updateRepo(List.of(new RepoObject("diff/test-prefix/db2/PROCEDURE/dbo/proc1.sql", null)));
-        String expectedResponse = "[DbObject[schema=dbo, name=proc1, type=PROCEDURE]]";
         var expectedChanges = List.of(new DbObjectChange(
                 DbObjectType.PROCEDURE, "dbo", "proc1", DbObjectChange.Action.CREATE_OR_UPDATE));
 
@@ -351,7 +350,6 @@ class SynchronizationTestsIT {
         List<SyncResult> dryRunResponse = synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db2"), true, false);
 
         assertEquals(SyncResult.Status.SUCCESS_DRY_RUN, dryRunResponse.getFirst().status());
-        assertEquals(expectedResponse, dryRunResponse.getFirst().message());
         assertEquals(expectedChanges, dryRunResponse.getFirst().changes());
         var expectedOldProc1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1OldDef);
         assertObjectExistInDb("db2", expectedOldProc1);
@@ -360,7 +358,6 @@ class SynchronizationTestsIT {
         List<SyncResult> response = synchronizerService.syncRepoToDb(Constants.HEAD, List.of("db2"), false, false);
 
         assertEquals(SyncResult.Status.SYNCED, response.getFirst().status());
-        assertEquals(expectedResponse, response.getFirst().message());
         assertEquals(expectedChanges, response.getFirst().changes());
         var expectedNewProc1 = new DbObject("dbo", "proc1", DbObjectType.PROCEDURE, proc1NewDef);
         assertObjectExistInDb("db2", expectedNewProc1);

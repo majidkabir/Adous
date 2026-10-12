@@ -1,5 +1,6 @@
 package app.majid.adous.synchronizer.model;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
@@ -12,9 +13,9 @@ public record SyncResult(
         @Schema(description = "Synchronization status", example = "SYNCED")
         Status status,
 
-        @Schema(description = "Error or skip reason. For successful syncs it is a text list of the changes, "
-                + "kept for compatibility; use `changes` instead.",
-                example = "[DbObject[schema=dbo, name=usp_get_orders, type=PROCEDURE]]")
+        @Schema(description = "Why the database was skipped or failed; omitted on success",
+                example = "The database 'db2' has not been onboarded to the repository yet")
+        @JsonInclude(JsonInclude.Include.NON_NULL)
         String message,
 
         @Schema(description = "Objects applied (or, in a dry run, that would be applied); empty when skipped or failed")

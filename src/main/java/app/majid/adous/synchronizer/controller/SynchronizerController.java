@@ -66,7 +66,6 @@ public class SynchronizerController {
         return new SyncDbToRepoResponse(
                 dbName,
                 false,
-                written.toString(),
                 "Repository initialized successfully",
                 written.stream().map(RepoFileChange::from).toList()
         );
@@ -95,7 +94,6 @@ public class SynchronizerController {
         return new SyncDbToRepoResponse(
                 dbName,
                 dryRun,
-                changed.toString(),
                 "Sync completed successfully",
                 changed.stream().map(RepoFileChange::from).toList()
         );

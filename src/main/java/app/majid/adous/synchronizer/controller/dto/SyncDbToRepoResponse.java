@@ -13,10 +13,6 @@ public record SyncDbToRepoResponse(
         @Schema(description = "Whether this was a dry run", example = "false")
         boolean dryRun,
 
-        @Schema(description = "Text list of the repository files changed. Deprecated: use `changes`.",
-                example = "[RepoObject[path=base/TABLE/dbo/users.sql]]", deprecated = true)
-        String result,
-
         @Schema(description = "Success or error message", example = "Sync completed successfully")
         String message,
 

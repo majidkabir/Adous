@@ -207,14 +207,14 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
             List<DbObject> applied = syncRepoToDb(commitish, dbName, dryRun, force, allowDataLoss);
             SyncResult.Status status = dryRun ? SyncResult.Status.SUCCESS_DRY_RUN : SyncResult.Status.SYNCED;
             logger.info("Successfully synced database '{}' (status: {})", dbName, status);
-            return new SyncResult(dbName, status, applied.toString(),
+            return new SyncResult(dbName, status, null,
                     applied.stream().map(DbObjectChange::from).toList());
         } catch (DbNotOnboardedException e) {
             logger.warn("Database '{}' is not onboarded, skipping", dbName);
-            return new SyncResult(dbName, SyncResult.Status.SKIPPED_NOT_ONBOARDED, "");
+            return new SyncResult(dbName, SyncResult.Status.SKIPPED_NOT_ONBOARDED, e.getMessage());
         } catch (DbOutOfSyncException e) {
             logger.warn("Database '{}' is out of sync, skipping", dbName);
-            return new SyncResult(dbName, SyncResult.Status.SKIPPED_OUT_OF_SYNC, "");
+            return new SyncResult(dbName, SyncResult.Status.SKIPPED_OUT_OF_SYNC, e.getMessage());
         } catch (DataLossException e) {
             logger.warn("Database '{}' skipped: changes would destroy data {}", dbName, e.getStatements());
             return new SyncResult(dbName, SyncResult.Status.SKIPPED_DATA_LOSS, e.getMessage());

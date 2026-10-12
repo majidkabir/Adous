@@ -42,8 +42,7 @@ POST /api/synchronizer/init-repo/{dbName}
   "changes": [
     { "path": "base/TABLE/dbo/users.sql", "type": "TABLE", "schema": "dbo", "name": "users", "action": "WRITE" },
     { "path": "base/PROCEDURE/dbo/usp_get_users.sql", "type": "PROCEDURE", "schema": "dbo", "name": "usp_get_users", "action": "WRITE" }
-  ],
-  "result": "[RepoObject[path=base/TABLE/dbo/users.sql], ...]"
+  ]
 }
 ```
 
@@ -84,8 +83,7 @@ POST /api/synchronizer/db-to-repo/{dbName}?dryRun={true|false}
     { "path": "diff/prod/mydatabase/PROCEDURE/dbo/usp_get_orders.sql", "type": "PROCEDURE", "schema": "dbo", "name": "usp_get_orders", "action": "WRITE" },
     { "path": "diff/prod/mydatabase/VIEW/dbo/v_report.sql", "type": "VIEW", "schema": "dbo", "name": "v_report", "action": "DELETE" },
     { "path": "diff/prod/mydatabase/FUNCTION/dbo/fn_old.sql", "type": "FUNCTION", "schema": "dbo", "name": "fn_old", "action": "MARK_ABSENT" }
-  ],
-  "result": "[RepoObject[path=diff/prod/mydatabase/PROCEDURE/dbo/usp_get_orders.sql], ...]"
+  ]
 }
 ```
 
@@ -93,8 +91,6 @@ POST /api/synchronizer/db-to-repo/{dbName}?dryRun={true|false}
 - `WRITE` — file written with the object's definition
 - `DELETE` — database-specific override removed (the database matches `base/` again)
 - `MARK_ABSENT` — empty override written: the object does not exist in this database
-
-`result` is the same list as text and is **deprecated**; use `changes`.
 
 **Example:**
 ```bash
@@ -149,8 +145,7 @@ One result per database:
     "changes": [
       { "type": "TABLE", "schema": "dbo", "name": "orders", "action": "CREATE_OR_UPDATE" },
       { "type": "PROCEDURE", "schema": "dbo", "name": "usp_old", "action": "DROP" }
-    ],
-    "message": "[DbObject[schema=dbo, name=orders, type=TABLE], ...]"
+    ]
   },
   {
     "dbName": "database2",
@@ -161,7 +156,7 @@ One result per database:
 ]
 ```
 
-`status` is one of `SYNCED`, `SUCCESS_DRY_RUN`, `SKIPPED_NOT_ONBOARDED`, `SKIPPED_OUT_OF_SYNC`, `SKIPPED_DATA_LOSS`, `FAILED`. `changes` lists the objects applied (or, in a dry run, that would be applied). `message` carries the reason for skipped and failed databases; for successful ones it repeats the changes as text, kept for compatibility.
+`status` is one of `SYNCED`, `SUCCESS_DRY_RUN`, `SKIPPED_NOT_ONBOARDED`, `SKIPPED_OUT_OF_SYNC`, `SKIPPED_DATA_LOSS`, `FAILED`. `changes` lists the objects applied (or, in a dry run, that would be applied). `message` gives the reason for skipped and failed databases and is omitted on success.
 
 **Example:**
 ```bash

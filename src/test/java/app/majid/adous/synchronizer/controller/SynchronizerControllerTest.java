@@ -57,7 +57,7 @@ class SynchronizerControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dbName").value(dbName))
                 .andExpect(jsonPath("$.dryRun").value(true))
-                .andExpect(jsonPath("$.result").value(changed.toString()))
+                .andExpect(jsonPath("$.result").doesNotExist())
                 .andExpect(jsonPath("$.changes.length()").value(3))
                 .andExpect(jsonPath("$.changes[0].path").value("diff/p/testdb/PROCEDURE/dbo/proc1.sql"))
                 .andExpect(jsonPath("$.changes[0].type").value("PROCEDURE"))
@@ -86,7 +86,7 @@ class SynchronizerControllerTest {
         // Given
         List<String> dbs = List.of("db1", "db2");
         List<SyncResult> expectedResults = List.of(
-                new SyncResult("db1", SyncResult.Status.SYNCED, "Changes applied", List.of(
+                new SyncResult("db1", SyncResult.Status.SYNCED, null, List.of(
                         new DbObjectChange(DbObjectType.PROCEDURE, "dbo", "proc1", DbObjectChange.Action.CREATE_OR_UPDATE),
                         new DbObjectChange(DbObjectType.VIEW, "dbo", "v1", DbObjectChange.Action.DROP))),
                 new SyncResult("db2", SyncResult.Status.SKIPPED_NOT_ONBOARDED, "")
@@ -103,6 +103,7 @@ class SynchronizerControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].dbName").value("db1"))
                 .andExpect(jsonPath("$[0].status").value("SYNCED"))
+                .andExpect(jsonPath("$[0].message").doesNotExist())
                 .andExpect(jsonPath("$[0].changes[0].type").value("PROCEDURE"))
                 .andExpect(jsonPath("$[0].changes[0].action").value("CREATE_OR_UPDATE"))
                 .andExpect(jsonPath("$[0].changes[1].action").value("DROP"))
