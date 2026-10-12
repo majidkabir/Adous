@@ -82,7 +82,7 @@ These SQL Server features are fully implemented and operational in Adous.
   - CYCLE/NO CYCLE option
   - CACHE/NO CACHE configuration
 - **Method:** Extract via `sys.sequences`
-- **Application:** DROP/CREATE pattern
+- **Application:** `ALTER SEQUENCE` for existing sequences, which keeps the current value. `START WITH` changes are applied with `RESTART WITH` only if the sequence has never been used. DROP/CREATE is used only for new sequences or a data type change.
 
 ### 8. **Synonyms**
 - **Status:** ✅ Fully Supported
