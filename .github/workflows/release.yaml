@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # Started by tag-release.yaml with --ref vX.Y.Z (tags pushed by a workflow
+  # don't trigger push events)
+  workflow_dispatch:
 
 jobs:
   create-release:

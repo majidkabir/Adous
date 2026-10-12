@@ -1,0 +1,80 @@
+name: Tag release
+
+# Creates the vX.Y.Z tag for the version in build.gradle once it reaches main,
+# then starts the Release and image workflows for that tag.
+#
+# A tag pushed with GITHUB_TOKEN does not trigger other workflows, so they are
+# started explicitly with `gh workflow run` (workflow_dispatch is allowed).
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - build.gradle
+      - .github/workflows/tag-release.yaml
+  # Dry run on PRs: validates the version and reports what would be tagged
+  pull_request:
+    paths:
+      - build.gradle
+      - .github/workflows/tag-release.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: write   # push the tag
+  actions: write    # start the release workflows
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether to tag
+        id: version
+        run: |
+          VERSION=$(grep -Po "(?<=version = ')[^']+" build.gradle)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not read version from build.gradle"
+            exit 1
+          fi
+          TAG="v$VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if [[ "$VERSION" == *-SNAPSHOT ]]; then
+            echo "Version $VERSION is a snapshot; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version '$VERSION' is not X.Y.Z or X.Y.Z-SNAPSHOT"
+            exit 1
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            echo "Tag $TAG already exists; nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Will create $TAG at ${GITHUB_SHA::12}."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        if: steps.version.outputs.release == 'true' && github.event_name != 'pull_request'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Start release and image workflows
+        if: steps.version.outputs.release == 'true' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh workflow run release.yaml --ref "$TAG"
+          gh workflow run build-push.yaml --ref "$TAG"
+          echo "Started Release and image workflows for $TAG"

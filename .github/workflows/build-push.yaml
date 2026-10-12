@@ -11,6 +11,8 @@ on:
       - Dockerfile
       - .dockerignore
       - .github/workflows/build-push.yaml
+  # Started by tag-release.yaml with --ref vX.Y.Z
+  workflow_dispatch:
 
 jobs:
   docker:
