@@ -286,7 +286,8 @@ public class MSSQLDatabaseService implements DatabaseService {
             long maxValue = rs.getLong("maximum_value");
             boolean cycling = rs.getBoolean("is_cycling");
             boolean cached = rs.getBoolean("is_cached");
-            int cacheSize = rs.getInt("cache_size");
+            // cache_size is NULL when the sequence uses the default cache size
+            Integer cacheSize = rs.getObject("cache_size", Integer.class);
             String dataType = rs.getString("data_type");
 
             String definition = """
@@ -302,7 +303,7 @@ public class MSSQLDatabaseService implements DatabaseService {
             """.formatted(
                     schema, name, dataType, startValue, increment, minValue, maxValue,
                     cycling ? "CYCLE" : "NO CYCLE",
-                    (cached && cacheSize > 0) ? "CACHE " + cacheSize : "NO CACHE"
+                    cacheClause(cached, cacheSize)
             );
 
             return new DbObject(schema, name, DbObjectType.SEQUENCE, definition);
@@ -310,6 +311,17 @@ public class MSSQLDatabaseService implements DatabaseService {
 
         logger.debug("Retrieved {} sequences", sequences.size());
         return sequences;
+    }
+
+    /**
+     * {@code CACHE n} for an explicit size, {@code CACHE} for the server default size,
+     * {@code NO CACHE} when caching is off.
+     */
+    static String cacheClause(boolean cached, Integer cacheSize) {
+        if (!cached) {
+            return "NO CACHE";
+        }
+        return cacheSize != null && cacheSize > 0 ? "CACHE " + cacheSize : "CACHE";
     }
 
     /**

@@ -168,6 +168,42 @@ class MSSQLDatabaseServiceSequenceTest {
         assertEquals(target, readBack, "db definition must match the applied one so it is not reported as drift");
     }
 
+    @Test
+    void shouldReadDefaultCacheAsCache() {
+        jdbcTemplate.execute("CREATE SEQUENCE dbo.seq_test AS INT START WITH 1 INCREMENT BY 1 CACHE");
+
+        assertTrue(definition().contains("CACHE;"), definition());
+        assertFalse(definition().contains("NO CACHE"), definition());
+    }
+
+    @Test
+    void shouldReadExplicitCacheSizeAndNoCache() {
+        jdbcTemplate.execute("CREATE SEQUENCE dbo.seq_test AS INT START WITH 1 INCREMENT BY 1 CACHE 50");
+        assertTrue(definition().contains("CACHE 50;"), definition());
+
+        jdbcTemplate.execute("ALTER SEQUENCE dbo.seq_test NO CACHE");
+        assertTrue(definition().contains("NO CACHE;"), definition());
+    }
+
+    @Test
+    void shouldKeepDefaultCacheThroughRoundTrip() {
+        jdbcTemplate.execute("CREATE SEQUENCE dbo.seq_test AS INT START WITH 1 INCREMENT BY 1 CACHE");
+        String original = definition();
+
+        apply(original.replace("INCREMENT BY 1", "INCREMENT BY 2"));
+
+        Map<String, Object> props = properties();
+        assertEquals(true, props.get("is_cached"));
+        assertNull(props.get("cache_size"), "default cache size must stay default");
+        assertEquals(original.replace("INCREMENT BY 1", "INCREMENT BY 2"), definition());
+    }
+
+    private static String definition() {
+        return databaseService.getDbObjects().stream()
+                .filter(o -> o.type() == DbObjectType.SEQUENCE && o.name().equals("seq_test"))
+                .findFirst().orElseThrow().definition();
+    }
+
     private void apply(String definition) {
         databaseService.applyChangesToDatabase(List.of(
                 new DbObject("dbo", "seq_test", DbObjectType.SEQUENCE, definition)));
