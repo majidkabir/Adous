@@ -39,14 +39,17 @@ public class MSSQLDatabaseService implements DatabaseService {
 
     private final JdbcTemplate jdbcTemplate;
     private final TableAlterScriptGenerator tableAlterScriptGenerator;
+    private final SequenceAlterScriptGenerator sequenceAlterScriptGenerator;
 
     /** Module types that support CREATE OR ALTER. */
     private static final Set<DbObjectType> MODULE_TYPES = EnumSet.of(
             DbObjectType.PROCEDURE, DbObjectType.FUNCTION, DbObjectType.VIEW, DbObjectType.TRIGGER);
 
-    public MSSQLDatabaseService(JdbcTemplate jdbcTemplate, TableAlterScriptGenerator tableAlterScriptGenerator) {
+    public MSSQLDatabaseService(JdbcTemplate jdbcTemplate, TableAlterScriptGenerator tableAlterScriptGenerator,
+                                SequenceAlterScriptGenerator sequenceAlterScriptGenerator) {
         this.jdbcTemplate = jdbcTemplate;
         this.tableAlterScriptGenerator = tableAlterScriptGenerator;
+        this.sequenceAlterScriptGenerator = sequenceAlterScriptGenerator;
     }
 
     @Override
@@ -829,6 +832,7 @@ public class MSSQLDatabaseService implements DatabaseService {
      * For TABLEs: generates ALTER statements to preserve data
      * For procedures, functions, views and triggers: uses CREATE OR ALTER so the object keeps
      * its id and therefore its permissions (falls back to DROP + CREATE when that is impossible)
+     * For existing SEQUENCEs: uses ALTER SEQUENCE so the current value is kept
      * For other objects: uses DROP and CREATE pattern
      * Objects are processed in dependency order to ensure referenced objects exist:
      * 1. Tables (base objects)
@@ -845,9 +849,11 @@ public class MSSQLDatabaseService implements DatabaseService {
 
         orderedChanges.forEach(change -> {
             String sql;
-            Optional<String> createOrAlter = change.definition() == null || change.type() == DbObjectType.TABLE
+            Optional<String> inPlaceScript = change.definition() == null || change.type() == DbObjectType.TABLE
                     ? Optional.empty()
-                    : createOrAlterScript(change);
+                    : change.type() == DbObjectType.SEQUENCE
+                        ? sequenceAlterScriptGenerator.generateAlterScript(change)
+                        : createOrAlterScript(change);
             if (change.type() == DbObjectType.TABLE) {
                 // For tables, use ALTER script generator to preserve data
                 if (change.definition() != null) {
@@ -860,8 +866,8 @@ public class MSSQLDatabaseService implements DatabaseService {
                     sql = buildDropQuery(change);
                     executeWithGoBatchSeparator(sql);
                 }
-            } else if (createOrAlter.isPresent()) {
-                executeWithGoBatchSeparator(createOrAlter.get());
+            } else if (inPlaceScript.isPresent()) {
+                executeWithGoBatchSeparator(inPlaceScript.get());
             } else {
                 // For other non-table objects, use traditional DROP/CREATE pattern
                 if (change.definition() != null && MODULE_TYPES.contains(change.type())) {

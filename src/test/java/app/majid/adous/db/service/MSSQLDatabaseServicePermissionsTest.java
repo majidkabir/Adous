@@ -44,7 +44,8 @@ class MSSQLDatabaseServicePermissionsTest {
         config.setMaximumPoolSize(2);
         dataSource = new HikariDataSource(config);
         jdbcTemplate = new JdbcTemplate(dataSource);
-        databaseService = new MSSQLDatabaseService(jdbcTemplate, new TableAlterScriptGenerator(jdbcTemplate));
+        databaseService = new MSSQLDatabaseService(jdbcTemplate, new TableAlterScriptGenerator(jdbcTemplate),
+                new SequenceAlterScriptGenerator(jdbcTemplate));
         ReflectionTestUtils.setField(databaseService, "defaultSchema", "dbo");
         jdbcTemplate.execute("CREATE ROLE adous_perm_role");
     }
