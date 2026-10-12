@@ -25,7 +25,7 @@ These SQL Server features are fully implemented and operational in Adous.
   - Unique constraints
   - Foreign key constraints (with FK dependency tracking)
   - Check constraints
-  - Indexes, including unique and filtered (`WHERE`) indexes. They are written as plain `CREATE INDEX`, so clustered, columnstore, XML and spatial indexes are recreated as regular indexes.
+  - Indexes: clustered and nonclustered (unique, filtered, `INCLUDE` columns, descending keys), clustered and nonclustered columnstore; nonclustered primary keys. XML, spatial and memory-optimized indexes are not managed.
 - **Method:** Extract via `sys.tables`, `sys.columns`, `sys.indexes`, `sys.foreign_keys`, `sys.constraints`
 - **Application:** New tables are created. Existing tables get `ALTER TABLE` statements, and dropping a column or table needs `allowDataLoss`. Added or removed foreign keys and unique constraints, removed check constraints and indexes, and changed column defaults are **not** applied to existing tables. See [Table changes](architecture.md#applying-changes).
 
@@ -157,15 +157,15 @@ These features are SQL Server database objects that are NOT currently supported 
 - **Estimated Complexity:** Low (metadata extraction + table DDL template adjustment)
 - **Priority:** Medium (useful for derived data, not commonly used in simple schemas)
 
-### 3. **Index Types (Clustered, Columnstore, XML, Spatial)**
-- **Current Status:** ⚠️ Partially Supported (filtered and unique indexes work; the index type is not preserved)
-- **Reason for Omission:** Indexes are written as plain `CREATE [UNIQUE] INDEX`, so a clustered, columnstore, XML or spatial index is recreated as a regular nonclustered index
-- **Feasibility:** 🟢 **Easy to Add**
+### 3. **XML and Spatial Indexes**
+- **Current Status:** ❌ Not Supported (skipped with a warning)
+- **Reason for Omission:** They need their own DDL (`CREATE [PRIMARY] XML INDEX`, `CREATE SPATIAL INDEX` with tessellation options); rowstore and columnstore indexes are supported
+- **Feasibility:** 🟡 **Moderate to Add**
 - **Implementation Approach:**
-  - Use `sys.indexes.type` to emit `CLUSTERED` / `NONCLUSTERED` / `COLUMNSTORE`
-  - Generate `CREATE XML INDEX` / `CREATE SPATIAL INDEX` with their options
-- **Estimated Complexity:** Low
-- **Priority:** Medium (clustered and columnstore indexes affect performance)
+  - Read `sys.xml_indexes` and `sys.spatial_indexes` / `sys.spatial_index_tessellations`
+  - Generate the matching `CREATE ... INDEX` statements; secondary XML indexes depend on the primary one
+- **Estimated Complexity:** Moderate
+- **Priority:** Low
 
 ### 4. **Statistics Objects**
 - **Current Status:** ❌ Not Supported
@@ -329,7 +329,7 @@ These SQL Server features CANNOT be supported by Adous due to architectural or t
 | **Full-Text Catalogs** | ✅ Yes | - | - | Catalog infrastructure only |
 | **Full-Text Indexes** | ❌ No | Easy | Medium | Can be added |
 | **Computed Columns** | ❌ No | Easy | Medium | Can be added |
-| **Index Types** | ⚠️ Partial | Easy | Medium | Filtered/unique work; clustered, columnstore, XML, spatial become regular indexes |
+| **XML / Spatial Indexes** | ❌ No | Moderate | Low | Skipped with a warning; rowstore and columnstore indexes are supported |
 | **Statistics Objects** | ❌ No | Moderate | Low | Can be added |
 | **Default Constraints** | ⚠️ Partial | Easy | Low | Minor enhancements |
 | **Partitioned Tables** | ❌ No | Moderate | Medium | Can be added |
@@ -347,7 +347,7 @@ These SQL Server features CANNOT be supported by Adous due to architectural or t
 ## Implementation Roadmap (Suggested Priority)
 
 ### Phase 1: Low-Hanging Fruit (Easy Wins)
-1. **Index Types** (clustered, columnstore, XML, spatial) - 1-2 days, high utility
+1. **XML and spatial indexes** - 1-2 days, low utility
 2. **Computed Columns** - 2-3 days, moderate utility
 3. **Full-Text Indexes** - 2-3 days, medium utility
 

@@ -521,8 +521,11 @@ public class MSSQLDatabaseService implements DatabaseService {
         String pkQuery = """
                 SELECT
                     kc.name AS constraint_name,
+                    MAX(i.type) AS index_type,
                     STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
                 FROM sys.key_constraints kc
+                JOIN sys.indexes i ON i.object_id = kc.parent_object_id
+                    AND i.index_id = kc.unique_index_id
                 JOIN sys.index_columns ic ON kc.parent_object_id = ic.object_id
                     AND kc.unique_index_id = ic.index_id
                 JOIN sys.columns c ON ic.object_id = c.object_id
@@ -546,8 +549,11 @@ public class MSSQLDatabaseService implements DatabaseService {
                 normalizedName = "PK_" + tableName;
             }
 
-            constraints.add(String.format("CONSTRAINT [%s] PRIMARY KEY (%s)",
-                    normalizedName, formattedColumns));
+            // Clustered is the default for a primary key; record NONCLUSTERED so a separate
+            // clustered index on the table can be recreated
+            String nonclustered = rs.getInt("index_type") == 2 ? " NONCLUSTERED" : "";
+            constraints.add(String.format("CONSTRAINT [%s] PRIMARY KEY%s (%s)",
+                    normalizedName, nonclustered, formattedColumns));
         }, objectId);
 
         // Unique Constraints
@@ -659,9 +665,14 @@ public class MSSQLDatabaseService implements DatabaseService {
     }
 
     /**
-     * Gets index definitions for a table (non-constraint indexes).
-     * Includes all index types: Clustered (1), Non-Clustered (2), XML (3), Spatial (4), Clustered Columnstore (5), etc.
-     * Validates and filters out only indexes with invalid column types that cannot be used as key columns.
+     * Gets index definitions for a table (indexes that don't back a PK or UNIQUE constraint).
+     * <ul>
+     *   <li>Rowstore: {@code CREATE [UNIQUE] [CLUSTERED] INDEX ... (key [DESC], ...) [INCLUDE (...)] [WHERE ...]}.
+     *       Nonclustered is the default, so it carries no keyword.</li>
+     *   <li>Columnstore: {@code CREATE CLUSTERED COLUMNSTORE INDEX ...} or
+     *       {@code CREATE NONCLUSTERED COLUMNSTORE INDEX ... (columns) [WHERE ...]}.</li>
+     *   <li>XML, spatial and other index types are not managed and are skipped with a warning.</li>
+     * </ul>
      */
     private List<String> getTableIndexes(String schemaName, String tableName, int objectId) {
         String indexQuery = """
@@ -671,15 +682,35 @@ public class MSSQLDatabaseService implements DatabaseService {
                     i.is_unique,
                     i.type AS index_type,
                     i.filter_definition,
-                    STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
+                    k.key_columns,
+                    inc.included_columns,
+                    a.all_columns
                 FROM sys.indexes i
-                LEFT JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id AND ic.is_included_column = 0
-                LEFT JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                -- One aggregate per APPLY: SQL Server rejects differently ordered STRING_AGGs in one scope
+                OUTER APPLY (
+                    SELECT STRING_AGG(QUOTENAME(c.name) + CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE '' END, ', ')
+                               WITHIN GROUP (ORDER BY ic.key_ordinal) AS key_columns
+                    FROM sys.index_columns ic
+                    JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                    WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id
+                        AND ic.is_included_column = 0 AND ic.key_ordinal > 0
+                ) k
+                OUTER APPLY (
+                    SELECT STRING_AGG(QUOTENAME(c.name), ', ') WITHIN GROUP (ORDER BY ic.index_column_id) AS included_columns
+                    FROM sys.index_columns ic
+                    JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                    WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1
+                ) inc
+                OUTER APPLY (
+                    SELECT STRING_AGG(QUOTENAME(c.name), ', ') WITHIN GROUP (ORDER BY ic.index_column_id) AS all_columns
+                    FROM sys.index_columns ic
+                    JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                    WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id
+                ) a
                 WHERE i.object_id = ?
                     AND i.is_primary_key = 0
                     AND i.is_unique_constraint = 0
                     AND i.type > 0
-                GROUP BY i.name, i.index_id, i.is_unique, i.type, i.filter_definition
                 """;
 
         List<String> indexes = new ArrayList<>();
@@ -687,36 +718,41 @@ public class MSSQLDatabaseService implements DatabaseService {
         jdbcTemplate.query(indexQuery, rs -> {
             String indexName = rs.getString("index_name");
             int indexId = rs.getInt("index_id");
-            boolean isUnique = rs.getBoolean("is_unique");
-            String filterDefinition = rs.getString("filter_definition");
-            String columns = rs.getString("columns");
+            int indexType = rs.getInt("index_type");
+            String unique = rs.getBoolean("is_unique") ? "UNIQUE " : "";
+            String filter = rs.getString("filter_definition");
+            String target = "[%s] ON [%s].[%s]".formatted(indexName, schemaName, tableName);
 
-            // Validate that all key columns have valid data types for indexing
-            if (hasInvalidIndexColumns(objectId, indexId)) {
-                logger.warn("Skipping index [{}] on [{}].[{}] - contains columns with types invalid for index keys (VARCHAR(MAX), NVARCHAR(MAX), TEXT, etc.)",
-                        indexName, schemaName, tableName);
-                return;
+            String indexDefinition;
+            switch (indexType) {
+                case 1, 2 -> {
+                    // Rowstore indexes: key columns must have indexable types
+                    if (hasInvalidIndexColumns(objectId, indexId)) {
+                        logger.warn("Skipping index [{}] on [{}].[{}] - contains columns with types invalid for index keys (VARCHAR(MAX), NVARCHAR(MAX), TEXT, etc.)",
+                                indexName, schemaName, tableName);
+                        return;
+                    }
+                    String clustered = indexType == 1 ? "CLUSTERED " : "";
+                    indexDefinition = "CREATE %s%sINDEX %s (%s)".formatted(
+                            unique, clustered, target, rs.getString("key_columns"));
+                    String included = rs.getString("included_columns");
+                    if (included != null && !included.isBlank()) {
+                        indexDefinition += " INCLUDE (" + included + ")";
+                    }
+                }
+                case 5 -> indexDefinition = "CREATE CLUSTERED COLUMNSTORE INDEX " + target;
+                case 6 -> indexDefinition = "CREATE NONCLUSTERED COLUMNSTORE INDEX %s (%s)".formatted(
+                        target, rs.getString("all_columns"));
+                default -> {
+                    logger.warn("Skipping index [{}] on [{}].[{}] - index type {} (XML, spatial, hash, ...) is not managed",
+                            indexName, schemaName, tableName, indexType);
+                    return;
+                }
             }
 
-            String[] columnArray = columns.split(", ");
-            String formattedColumns = Arrays.stream(columnArray)
-                    .map(col -> "[" + col + "]")
-                    .collect(Collectors.joining(", "));
-
-            String uniqueKeyword = isUnique ? "UNIQUE " : "";
-
-            // Note: We don't include CLUSTERED/NONCLUSTERED keywords to match Git convention
-            // The index type is implicit from the database structure
-
-            String indexDefinition = String.format("CREATE %sINDEX [%s] ON [%s].[%s] (%s)",
-                    uniqueKeyword, indexName, schemaName, tableName, formattedColumns);
-
-            // Add WHERE clause if it exists (filtered index)
-            // SQL Server's filter_definition does not include the WHERE keyword, so we must add it
-            if (filterDefinition != null && !filterDefinition.trim().isEmpty()) {
-                String normalizedFilter = normalizeFilterDefinition(filterDefinition);
-                indexDefinition += " WHERE " + normalizedFilter;
-                logger.debug("Index [{}] has filter: WHERE {}", indexName, normalizedFilter);
+            // filter_definition does not include the WHERE keyword
+            if (filter != null && !filter.trim().isEmpty()) {
+                indexDefinition += " WHERE " + normalizeFilterDefinition(filter);
             }
 
             indexDefinition += ";";
