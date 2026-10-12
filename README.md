@@ -349,6 +349,13 @@ Adous follows [Semantic Versioning](https://semver.org/) (SemVer):
   - **MINOR**: New features (backward-compatible)
   - **PATCH**: Bug fixes (backward-compatible)
 
+### Making a Release
+
+1. Set a release version in `build.gradle` (e.g. `0.2.0`, not `-SNAPSHOT`) and add a section to `CHANGELOG.md`.
+2. Merge to `main`. The **Tag release** workflow creates the `v0.2.0` tag, then starts the **Release** workflow (GitHub release) and the image workflow (`ghcr.io/.../adous:v0.2.0`).
+
+The workflow does nothing for `-SNAPSHOT` versions or tags that already exist. It can also be started by hand from the Actions tab.
+
 ### Release Tags
 
 Git tags mark stable releases:
@@ -366,7 +373,7 @@ git checkout v1.0.0
 Docker images are published to GitHub Container Registry with multiple tags:
 
 - `ghcr.io/owner/adous:latest` - Latest build from main branch
-- `ghcr.io/owner/adous:0.0.1-SNAPSHOT` - Specific version from build.gradle
+- `ghcr.io/owner/adous:0.1.0` - Specific version from build.gradle
 - `ghcr.io/owner/adous:abc123def456` - Specific commit SHA (short)
 - `ghcr.io/owner/adous:v1.0.0` - Specific release tag
 
