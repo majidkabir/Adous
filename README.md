@@ -163,7 +163,7 @@ The Docker image includes:
 
 ### API Documentation
 
-Access Swagger UI at: `http://localhost:8080/swagger-ui.html`
+Access Swagger UI at: `http://localhost:8080/swagger-ui.html`. To use "Try it out", click **Authorize** and enter your API key.
 
 ### Quick Start Workflow
 
