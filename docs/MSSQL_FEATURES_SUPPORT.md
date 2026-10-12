@@ -4,7 +4,7 @@ This document categorizes SQL Server database objects and features, identifying 
 
 ## Summary
 
-- **Supported Features:** 10 object types
+- **Supported Features:** 11 object types, plus automatic schema creation
 - **Can Be Added:** 8 feature categories
 - **Cannot Be Supported:** 5 feature categories (by design or technical limitation)
 
@@ -15,20 +15,19 @@ This document categorizes SQL Server database objects and features, identifying 
 These SQL Server features are fully implemented and operational in Adous.
 
 ### 1. **Tables**
-- **Status:** ✅ Fully Supported
+- **Status:** ✅ Supported (some changes to existing tables are not applied, see below)
 - **Implementation:**
   - Column definitions with data types
   - IDENTITY properties
   - NULL/NOT NULL constraints
-  - Default values
+  - Default values (inline, unnamed)
   - Primary key constraints
   - Unique constraints
   - Foreign key constraints (with FK dependency tracking)
   - Check constraints
-  - Regular indexes (Clustered, Non-Clustered, Unique)
-  - Columnstore indexes (Clustered and Non-Clustered)
+  - Indexes, including unique and filtered (`WHERE`) indexes. They are written as plain `CREATE INDEX`, so clustered, columnstore, XML and spatial indexes are recreated as regular indexes.
 - **Method:** Extract via `sys.tables`, `sys.columns`, `sys.indexes`, `sys.foreign_keys`, `sys.constraints`
-- **Application:** ALTER TABLE for data preservation (when possible), DROP/CREATE fallback
+- **Application:** New tables are created. Existing tables get `ALTER TABLE` statements, and dropping a column or table needs `allowDataLoss`. Added or removed foreign keys and unique constraints, removed check constraints and indexes, and changed column defaults are **not** applied to existing tables. See [Table changes](architecture.md#applying-changes).
 
 ### 2. **Stored Procedures**
 - **Status:** ✅ Fully Supported
@@ -42,8 +41,7 @@ These SQL Server features are fully implemented and operational in Adous.
 ### 3. **Scalar Functions**
 - **Status:** ✅ Fully Supported
 - **Types Supported:**
-  - User-defined scalar functions (UDF)
-  - CLR functions
+  - User-defined T-SQL scalar functions (CLR functions are not extracted)
 - **Method:** Extract via `sys.objects` where `type = 'FN'`
 - **Application:** `CREATE OR ALTER` (keeps permissions); DROP/CREATE only when the function kind changes, e.g. scalar → table-valued
 
@@ -68,9 +66,9 @@ These SQL Server features are fully implemented and operational in Adous.
 ### 6. **Triggers**
 - **Status:** ✅ Fully Supported
 - **Types Supported:**
-  - DML triggers (INSERT, UPDATE, DELETE)
-  - DDL triggers (schema and server-level)
-- **Method:** Extract via `sys.triggers` and `sys.sql_modules`
+  - DML triggers (INSERT, UPDATE, DELETE, INSTEAD OF)
+  - DDL triggers are **not** extracted (database- and server-level triggers aren't in `sys.objects`)
+- **Method:** Extract via `sys.objects` (type `TR`) and `sys.sql_modules`
 - **Application:** `CREATE OR ALTER`
 
 ### 7. **Sequences**
@@ -159,17 +157,15 @@ These features are SQL Server database objects that are NOT currently supported 
 - **Estimated Complexity:** Low (metadata extraction + table DDL template adjustment)
 - **Priority:** Medium (useful for derived data, not commonly used in simple schemas)
 
-### 3. **Filtered Indexes (WHERE clause)**
-- **Current Status:** ❌ Partially Supported (index created but WHERE clause omitted)
-- **Reason for Omission:** WHERE clause filtering not extracted from index metadata
+### 3. **Index Types (Clustered, Columnstore, XML, Spatial)**
+- **Current Status:** ⚠️ Partially Supported (filtered and unique indexes work; the index type is not preserved)
+- **Reason for Omission:** Indexes are written as plain `CREATE [UNIQUE] INDEX`, so a clustered, columnstore, XML or spatial index is recreated as a regular nonclustered index
 - **Feasibility:** 🟢 **Easy to Add**
 - **Implementation Approach:**
-  - Query `sys.indexes` and `sys.index_columns`
-  - Extract filter definition via `sys.sql_modules` where index has filter
-  - Include `WHERE` clause in generated `CREATE INDEX` statement
-  - Example: `CREATE INDEX idx ON table(col) WHERE status = 1`
-- **Estimated Complexity:** Low (straightforward metadata extraction)
-- **Priority:** Medium (useful for optimization, not essential)
+  - Use `sys.indexes.type` to emit `CLUSTERED` / `NONCLUSTERED` / `COLUMNSTORE`
+  - Generate `CREATE XML INDEX` / `CREATE SPATIAL INDEX` with their options
+- **Estimated Complexity:** Low
+- **Priority:** Medium (clustered and columnstore indexes affect performance)
 
 ### 4. **Statistics Objects**
 - **Current Status:** ❌ Not Supported
@@ -220,7 +216,7 @@ These features are SQL Server database objects that are NOT currently supported 
 - **Priority:** Medium (advanced optimization, not critical)
 
 ### 8. **CLR Objects (Assembly-based Types, Functions, Procedures)**
-- **Current Status:** ⚠️ Partial Support (CLR functions extracted but assemblies not versioned)
+- **Current Status:** ❌ Not Supported (CLR modules and assemblies are not extracted)
 - **Reason for Omission:** CLR objects require assembly versioning and deployment; cannot extract compiled code
 - **Feasibility:** 🟡 **Moderate to Add**
 - **Implementation Approach:**
@@ -320,12 +316,12 @@ These SQL Server features CANNOT be supported by Adous due to architectural or t
 
 | Feature | Status | Difficulty | Priority | Notes |
 |---------|--------|-----------|----------|-------|
-| **Tables** | ✅ Yes | - | - | Full support with constraints, indexes, FKs |
+| **Tables** | ✅ Yes | - | - | Some changes to existing tables not applied (FKs, unique, defaults) |
 | **Stored Procedures** | ✅ Yes | - | - | With SET options |
-| **Scalar Functions** | ✅ Yes | - | - | T-SQL and CLR |
+| **Scalar Functions** | ✅ Yes | - | - | T-SQL only |
 | **Table-Valued Functions** | ✅ Yes | - | - | Inline and multi-statement |
 | **Views** | ✅ Yes | - | - | With dependency tracking |
-| **Triggers** | ✅ Yes | - | - | DML and DDL triggers |
+| **Triggers** | ✅ Yes | - | - | DML triggers only |
 | **Sequences** | ✅ Yes | - | - | With all options |
 | **Synonyms** | ✅ Yes | - | - | Object references |
 | **User-Defined Table Types** | ✅ Yes | - | - | With column definitions |
@@ -333,12 +329,12 @@ These SQL Server features CANNOT be supported by Adous due to architectural or t
 | **Full-Text Catalogs** | ✅ Yes | - | - | Catalog infrastructure only |
 | **Full-Text Indexes** | ❌ No | Easy | Medium | Can be added |
 | **Computed Columns** | ❌ No | Easy | Medium | Can be added |
-| **Filtered Indexes** | ❌ No | Easy | Medium | Can be added |
+| **Index Types** | ⚠️ Partial | Easy | Medium | Filtered/unique work; clustered, columnstore, XML, spatial become regular indexes |
 | **Statistics Objects** | ❌ No | Moderate | Low | Can be added |
 | **Default Constraints** | ⚠️ Partial | Easy | Low | Minor enhancements |
 | **Partitioned Tables** | ❌ No | Moderate | Medium | Can be added |
 | **Indexed Views** | ❌ No | Moderate | Medium | Can be added |
-| **CLR Assemblies** | ⚠️ Partial | Moderate | Low | Assemblies not versioned |
+| **CLR Objects** | ❌ No | Moderate | Low | Not extracted |
 | **Database-Level Objects** | ❌ No | N/A | - | By design - security risk |
 | **Instance-Level Objects** | ❌ No | N/A | - | Out of scope |
 | **Data Rows** | ❌ No | N/A | - | By design - use ETL tools |
@@ -351,7 +347,7 @@ These SQL Server features CANNOT be supported by Adous due to architectural or t
 ## Implementation Roadmap (Suggested Priority)
 
 ### Phase 1: Low-Hanging Fruit (Easy Wins)
-1. **Filtered Indexes** - 1-2 days, high utility
+1. **Index Types** (clustered, columnstore, XML, spatial) - 1-2 days, high utility
 2. **Computed Columns** - 2-3 days, moderate utility
 3. **Full-Text Indexes** - 2-3 days, medium utility
 

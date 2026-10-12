@@ -20,7 +20,7 @@
 
 - 🔄 **Bidirectional Sync**: Sync database objects to Git and vice versa
 - 🗄️ **Multi-Database Support**: Manage multiple SQL Server databases simultaneously
-- 🌿 **Git Integration**: Full Git integration with commit, tag, and branch support
+- 🌿 **Git Integration**: Every change is a Git commit; a tag per database records the commit it matches
 - 🔍 **SQL Equivalence Checking**: Smart comparison of SQL statements
 - 🚀 **Parallel Processing**: Efficient synchronization using virtual threads
 - 📝 **OpenAPI Documentation**: Integrated Swagger UI for API exploration
@@ -93,7 +93,7 @@ management:
 
 #### Sync Ignore Configuration
 
-Create a `.syncignore` file in `src/main/resources/` to exclude specific database objects from synchronization:
+Exclude objects from synchronization with a `.syncignore` file. Point `GIT_SYNC_IGNORE_FILE` at it (works for the jar and Docker), or put it in `src/main/resources/` before building:
 
 ```
 # Ignore all stored procedures starting with 'temp_'
@@ -167,25 +167,32 @@ Access Swagger UI at: `http://localhost:8080/swagger-ui.html`
 
 ### Quick Start Workflow
 
-1. **Initialize Repository** (first time setup):
+All API calls need the `X-API-Key` header.
+
+1. **Initialize the repository** (first time):
    ```bash
-   curl -X POST http://localhost:8080/api/synchronizer/init-repo/myDatabase
+   curl -X POST http://localhost:8080/api/synchronizer/init-repo/myDatabase \
+     -H "X-API-Key: $API_KEY"
    ```
-   This creates the initial commit with all database objects.
+   This commits every object to `base/` and tags the commit with the database name.
 
-2. **Make changes to your database** (create/modify stored procedures, functions, views, triggers)
+2. **Make changes to your database**, or edit `base/` files in Git.
 
-3. **Sync database to repository**:
+3. **Record database changes in Git**:
    ```bash
-   curl -X POST "http://localhost:8080/api/synchronizer/db-to-repo/myDatabase?dryRun=false"
+   curl -X POST "http://localhost:8080/api/synchronizer/db-to-repo/myDatabase?dryRun=false" \
+     -H "X-API-Key: $API_KEY"
    ```
+   Changes are recorded as overrides for that database under `diff/`. To roll a change out to every database, update the `base/` file in Git.
 
-4. **Sync repository to other databases**:
+4. **Apply the repository to databases**:
    ```bash
    curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
      -H "Content-Type: application/json" \
-     -d '{"commitish": "main", "dbs": ["testDatabase", "stagingDatabase"], "dryRun": false, "force": false}'
+     -H "X-API-Key: $API_KEY" \
+     -d '{"commitish": "main", "dbs": ["testDatabase", "stagingDatabase"], "dryRun": true}'
    ```
+   Check the dry-run result, then repeat with `"dryRun": false`. Each database must have been onboarded (step 1, or one db-to-repo) and match its last synced commit.
 
 ## API Endpoints
 
@@ -202,7 +209,8 @@ POST /api/synchronizer/init-repo/{dbName}
 
 **Example:**
 ```bash
-curl -X POST http://localhost:8080/api/synchronizer/init-repo/myDatabase
+curl -X POST http://localhost:8080/api/synchronizer/init-repo/myDatabase \
+  -H "X-API-Key: $API_KEY"
 ```
 
 **Response:**
@@ -234,7 +242,8 @@ POST /api/synchronizer/db-to-repo/{dbName}?dryRun=false
 
 **Example:**
 ```bash
-curl -X POST "http://localhost:8080/api/synchronizer/db-to-repo/myDatabase?dryRun=false"
+curl -X POST "http://localhost:8080/api/synchronizer/db-to-repo/myDatabase?dryRun=false" \
+  -H "X-API-Key: $API_KEY"
 ```
 
 ### Sync Repository to Databases
@@ -254,16 +263,17 @@ Content-Type: application/json
 ```
 
 **Request Body:**
-- `commitish`: Git commit, branch, or tag reference to sync from
+- `commitish`: Git commit, branch, or tag reference to sync from. Anything other than the head of the default branch runs as a **dry run** unless `force` is true.
 - `dbs`: List of database names to sync
 - `dryRun`: Preview changes without applying (default: false)
-- `force`: Force sync even if database is out of sync (default: false)
+- `force`: Skip the onboarding and out-of-sync checks, and allow a commitish other than the head (default: false)
 - `allowDataLoss`: Apply changes that drop tables or columns (default: false); otherwise the database is skipped with `SKIPPED_DATA_LOSS`
 
 **Example:**
 ```bash
 curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
   -d '{
     "commitish": "main",
     "dbs": ["database1", "database2"],
@@ -292,17 +302,19 @@ diff/
           {objectName}.sql
 ```
 
-- **base/**: Contains the canonical version of database objects
-- **diff/**: Contains database-specific overrides
+- **base/**: The canonical definition of each object
+- **diff/**: Per-database overrides. An empty file means the object doesn't exist in that database.
 
 ### Synchronization Flow
 
-1. **DB → Repo**: Detects changes in database, creates/updates files in Git, commits and pushes
-2. **Repo → DB**: Reads Git commit, applies changes to database(s), tags commit with database name
+1. **DB → Repo**: Compares the database with the repository and records differences as overrides under `diff/`, then commits and pushes.
+2. **Repo → DB**: Applies the files that changed since the database's last synced commit, in one transaction per database, then moves the database's tag.
 
-### Tagging Strategy
+### Tagging
 
-Each database is tagged in Git when synchronized, allowing tracking of which commit each database is synced to.
+Each database has one Git tag named after it (lower case). The tag marks the commit the database matches, and moves on every successful repo-to-db. Adous uses it to detect databases that changed outside Git.
+
+See [docs/architecture.md](docs/architecture.md) for the details.
 
 ## Monitoring and Health Checks
 
@@ -334,7 +346,6 @@ The application exports metrics including:
 - HTTP request/response metrics
 - JVM memory and GC metrics
 - Database connection pool metrics
-- Custom synchronization operation metrics
 
 ### Docker Health Check
 
@@ -372,35 +383,21 @@ git checkout v1.0.0
 
 Docker images are published to GitHub Container Registry with multiple tags:
 
-- `ghcr.io/owner/adous:latest` - Latest build from main branch
-- `ghcr.io/owner/adous:0.1.0` - Specific version from build.gradle
-- `ghcr.io/owner/adous:abc123def456` - Specific commit SHA (short)
-- `ghcr.io/owner/adous:v1.0.0` - Specific release tag
+- `ghcr.io/majidkabir/adous:latest` - Latest build from main
+- `ghcr.io/majidkabir/adous:0.1.0` - Version from build.gradle
+- `ghcr.io/majidkabir/adous:abc123def456` - Commit SHA (short)
+- `ghcr.io/majidkabir/adous:v0.1.0` - Release tag
 
 **Use specific version tags in production** for reproducibility.
-
-### Database Sync Tagging
-
-Each database sync creates a Git tag:
-
-```
-{databaseName}/{timestamp}
-```
-
-Example: `production-db/20231205-143022`
-
-This tracks which commit each database is synced to, enabling:
-- Out-of-sync detection
-- Rollback capability
-- Audit trail
 
 ## Best Practices
 
 1. **Always use dry-run first**: Preview changes before applying
 2. **Regular syncs**: Keep databases and repository in sync
-3. **Use force carefully**: Only when you understand the implications
-4. **Review out-of-sync warnings**: They prevent data loss
-5. **Leverage .syncignore**: Exclude objects you don't want to sync
+3. **Use force carefully**: It skips the out-of-sync check that protects changes made directly in a database
+4. **Use allowDataLoss only on purpose**: Without it, dropping tables or columns is refused
+5. **Review out-of-sync results**: Run db-to-repo for that database first
+6. **Leverage .syncignore**: Exclude objects you don't want to sync
 
 ## Testing
 
@@ -414,17 +411,14 @@ Integration tests use Testcontainers for SQL Server.
 
 ## CI/CD
 
-The project includes GitHub Actions workflow for continuous integration:
+GitHub Actions workflows in `.github/workflows/`:
 
-### Build and Test Workflow
-
-Located in `.github/workflows/build-test.yaml`, this workflow:
-- Runs on pull requests and pushes to main branch
-- Sets up Java 25 with Temurin distribution
-- Builds the application with Gradle
-- Executes all tests including integration tests
-
-The workflow ensures code quality and test coverage on every change.
+| Workflow | Runs on | Does |
+|---|---|---|
+| `build-test.yaml` | PRs, pushes to main | Builds and runs all tests, including Testcontainers integration tests |
+| `build-push.yaml` | Pushes to main, release tags; PRs that change the image | Builds the multi-arch image; pushes it to GHCR except on PRs |
+| `tag-release.yaml` | `build.gradle` changes on main | Tags `vX.Y.Z` for a new release version and starts the release |
+| `release.yaml` | Release tags | Creates the GitHub release |
 
 ## Contributing
 
@@ -448,8 +442,8 @@ We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for
 
 ## Community
 
-- **Issues**: [Report bugs](https://github.com/OWNER/Adous/issues/new?template=bug_report.md) or [request features](https://github.com/OWNER/Adous/issues/new?template=feature_request.md)
-- **Discussions**: Ask questions and share ideas
+- **Issues**: [Report bugs](https://github.com/majidkabir/Adous/issues/new?template=bug_report.md) or [request features](https://github.com/majidkabir/Adous/issues/new?template=feature_request.md)
+- **Discussions**: [Ask questions and share ideas](https://github.com/majidkabir/Adous/discussions)
 - **Documentation**: Help improve docs in [docs/](docs/) directory
 
 ## License

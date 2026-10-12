@@ -1,462 +1,217 @@
 # Adous Architecture
 
-This document explains how Adous works internally, including object discovery, DDL normalization, dependency resolution, and synchronization strategies.
+How Adous works internally: repository layout, the three sync flows, how objects are extracted, compared and applied, tagging, and concurrency.
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Core Components](#core-components)
-- [Object Discovery](#object-discovery)
-- [DDL Normalization](#ddl-normalization)
-- [Dependency Resolution](#dependency-resolution)
-- [Synchronization Strategies](#synchronization-strategies)
-- [GO Batch Handling](#go-batch-handling)
-- [Table Evolution Strategy](#table-evolution-strategy)
-- [Index Filtering](#index-filtering)
-- [Tagging Strategy](#tagging-strategy)
-- [Concurrency Model](#concurrency-model)
+- [Repository Layout](#repository-layout)
+- [Sync Flows](#sync-flows)
+- [Object Extraction](#object-extraction)
+- [SQL Equivalence](#sql-equivalence)
+- [Applying Changes](#applying-changes)
+- [Tagging](#tagging)
+- [Concurrency and Failure Handling](#concurrency-and-failure-handling)
+- [Known Limitations](#known-limitations)
 
 ## Overview
 
-Adous is a bidirectional synchronization tool that maintains database schemas as code in Git. It extracts database objects into normalized DDL files and applies changes back to databases with dependency-aware ordering.
+Adous keeps SQL Server schemas in Git. It extracts object definitions from databases into `.sql` files, and applies the files in a Git commit back to one or more databases.
 
 ```
 ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-│  Database   │ ◄─────► │    Adous    │ ◄─────► │     Git     │
-│  (MSSQL)    │         │  Sync Engine│         │  Repository │
+│  Databases  │ ◄─────► │    Adous    │ ◄─────► │     Git     │
+│ (SQL Server)│         │  (REST API) │         │  repository │
 └─────────────┘         └─────────────┘         └─────────────┘
-     │                         │                        │
-     │  Extract Objects        │  Commit Changes        │
-     │  Apply Changes          │  Track History         │
-     │  Detect Drifts          │  Version Objects       │
-     └─────────────────────────┴────────────────────────┘
+   extract / apply DDL     compare, order,         commit, tag,
+                           guard, report           push, fetch
 ```
+
+Adous keeps a bare clone of the remote repository and fetches before every operation. All writes go to the default branch (`GIT_DEFAULT_BRANCH`, `main` by default) and are pushed immediately.
 
 ## Core Components
 
-### DatabaseRepositorySynchronizerService
-Orchestrates synchronization between databases and Git repository.
-
-**Responsibilities:**
-- Coordinate DB→Repo and Repo→DB flows
-- Manage Git operations (commit, tag, push)
-- Handle dry-run mode
-- Detect and report out-of-sync states
-
-### MSSQLDatabaseService
-SQL Server-specific implementation for object discovery and manipulation.
-
-**Responsibilities:**
-- Query system catalogs for object metadata
-- Generate DDL for each object type
-- Execute DDL with proper batch handling
-- Validate object dependencies
-
-### GitService
-High-level Git operations abstraction using JGit.
-
-**Responsibilities:**
-- Clone/init repositories
-- Commit and tag changes
-- Push to remote
-- Resolve commit references (tags, branches, SHAs)
-
-### SqlEquivalenceCheckerService
-Smart SQL statement comparison that ignores formatting differences.
-
-**Responsibilities:**
-- Normalize SQL for comparison (whitespace, comments, case)
-- Detect actual schema changes vs. cosmetic differences
-- Prevent unnecessary commits
-
-### TableAlterScriptGenerator
-Generates ALTER TABLE scripts to preserve data during schema evolution.
-
-**Responsibilities:**
-- Compare old and new table definitions
-- Generate ADD COLUMN, DROP COLUMN, MODIFY COLUMN statements
-- Handle constraints and indexes
-- Preserve existing data
-
-## Object Discovery
-
-Adous discovers and manages the following SQL Server object types:
-
-### Discovery Order (DB → Repo)
-
-1. **Types** (User-Defined Types)
-   - Queried from `sys.types` and `sys.assemblies`
-   - Must be created before tables that use them
-
-2. **Sequences**
-   - Queried from `sys.sequences`
-   - Independent of other objects
-
-3. **Synonyms**
-   - Queried from `sys.synonyms`
-   - Pointers to other objects
-
-4. **Tables**
-   - Queried from `sys.tables`, `sys.columns`, `sys.indexes`, `sys.foreign_keys`
-   - Includes columns, constraints, indexes
-   - Foreign key dependencies tracked for ordering
-
-5. **Functions** (Scalar, Table-Valued, Inline)
-   - Queried from `sys.objects` with `type IN ('FN', 'IF', 'TF')`
-   - May depend on tables and types
-
-6. **Procedures** (Stored Procedures)
-   - Queried from `sys.procedures`
-   - May depend on tables, views, functions
-
-7. **Views**
-   - Queried from `sys.views` and `sys.sql_modules`
-   - May depend on tables, other views, functions
-   - Dependency graph parsed and topologically sorted
-
-8. **Triggers** (Table Triggers)
-   - Queried from `sys.triggers`
-   - Attached to specific tables
-
-9. **Full-Text Catalogs**
-   - Queried from `sys.fulltext_catalogs`
-   - Search indexing infrastructure
-
-### Discovery Implementation
-
-```sql
--- Example: Discovering stored procedures
-SELECT 
-    s.name AS SchemaName,
-    p.name AS ProcedureName,
-    m.definition AS Definition
-FROM sys.procedures p
-INNER JOIN sys.schemas s ON p.schema_id = s.schema_id
-INNER JOIN sys.sql_modules m ON p.object_id = m.object_id
-WHERE p.is_ms_shipped = 0
-ORDER BY s.name, p.name;
-```
-
-## DDL Normalization
-
-All extracted DDL is normalized to ensure consistency and determinism.
-
-### SET Options
-
-Every script includes standard SET options:
-
-```sql
-SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
-GO
-```
-
-These options ensure consistent behavior across environments.
-
-### Constraint Naming
-
-Constraints are normalized with deterministic names:
-
-- **Primary Keys:** `PK_{TableName}`
-- **Unique Constraints:** `UQ_{TableName}_{ColumnName}`
-- **Check Constraints:** `CK_{TableName}_{ColumnName}`
-- **Default Constraints:** `DF_{TableName}_{ColumnName}`
-- **Foreign Keys:** `FK_{TableName}_{ReferencedTable}`
-
-Auto-generated system names (e.g., `PK__Person__AA2FFB8D...`) are replaced with readable names.
-
-### Whitespace and Formatting
-
-- Consistent indentation (tabs or spaces configurable)
-- Comments preserved
-- Line endings normalized to LF
-- Trailing whitespace removed
-
-### GO Batch Separators
-
-- GO statements are preserved exactly as they appear in SQL modules
-- Each GO separates independent batches
-- Critical for objects with schema-binding or context changes
-
-## Dependency Resolution
-
-Adous applies changes in dependency-aware order to prevent failures.
-
-### Table Dependencies (Foreign Keys)
-
-Tables are sorted using **topological sort** based on foreign key relationships:
-
-1. Build dependency graph: `Table A → Table B` if A references B
-2. Detect cycles (not typical in FK graphs)
-3. Sort tables so referenced tables are created first
-
-**Example:**
-```
-Person → Department (FK: DepartmentID)
-Order → Person (FK: PersonID)
-OrderItem → Order (FK: OrderID)
-
-Creation order: Department, Person, Order, OrderItem
-```
-
-### View Dependencies
-
-Views can depend on:
-- Tables
-- Other views
-- Functions
-
-Adous parses view definitions to extract dependencies:
-
-```sql
--- Example view
-CREATE VIEW EmployeeSummary AS
-SELECT e.EmployeeID, d.DepartmentName
-FROM Employee e
-INNER JOIN Department d ON e.DepartmentID = d.DepartmentID;
-```
-
-Dependency extraction:
-- Parse SQL AST or use regex heuristics
-- Identify referenced objects (Employee, Department)
-- Build dependency graph
-- Topologically sort views
-
-**View application order:**
-1. Create base tables (Employee, Department)
-2. Create functions (if any referenced)
-3. Create views in dependency order
-
-### Application Order (Repo → DB)
-
-1. **Types** - User-defined types
-2. **Sequences** - Independent generators
-3. **Synonyms** - Object pointers
-4. **Tables** - In FK dependency order
-5. **Functions** - May be used by views/procedures
-6. **Procedures** - May reference functions and tables
-7. **Views** - In dependency order (topologically sorted)
-8. **Triggers** - Attached to tables
-
-## Synchronization Strategies
-
-### DB → Repository
-
-1. **Discovery:** Query system catalogs for all objects
-2. **Extraction:** Generate normalized DDL for each object
-3. **Comparison:** Use SqlEquivalenceChecker to detect changes
-4. **Categorization:** Added, Modified, Deleted
-5. **Write Files:** Create/update/delete SQL files in base/ or diff/
-6. **Commit:** Create Git commit with descriptive message
-7. **Tag:** Tag commit with database name for tracking
-8. **Push:** Push to remote (if configured)
-
-### Repository → DB
-
-1. **Fetch Commit:** Resolve commitish (branch, tag, SHA)
-2. **Read Files:** Load SQL files from base/ and diff/
-3. **Merge Overrides:** Apply diff/ overrides on top of base/
-4. **Dependency Sort:** Order objects by dependencies
-5. **Dry Run (optional):** Preview changes without applying
-6. **Execute:** Run DDL scripts with GO batch handling
-7. **Verify:** Check for errors
-8. **Tag:** Tag commit with database name
-
-### Conflict Resolution
-
-- **base/ vs. diff/:** diff/ always wins (database-specific override)
-- **Concurrent changes:** Not supported; use Git branch protection
-- **Schema drift:** Detected via tagging; force flag required to override
-
-## GO Batch Handling
-
-SQL Server requires certain DDL statements to be in separate batches.
-
-### GO Separator Semantics
-
-`GO` is not a T-SQL statement; it's a batch terminator recognized by client tools.
-
-**Example:**
-```sql
-CREATE TABLE Person (ID INT);
-GO
-CREATE VIEW PersonView AS SELECT * FROM Person;
-GO
-```
-
-Each batch is submitted separately to SQL Server.
-
-### Adous GO Processing
-
-1. **Parse DDL:** Split script by GO statements
-2. **Execute Batches:** Submit each batch sequentially via JDBC
-3. **Error Handling:** If a batch fails, stop and report error
-4. **Preserve GO:** When extracting DDL, preserve GO statements as-is
-
-### Edge Cases
-
-- GO with count: `GO 5` (repeat batch 5 times) - not supported, treated as single GO
-- GO in comments or strings: Ignored during parsing
-- Missing GO between incompatible statements: SQL Server will error; Adous surfaces error
-
-## Table Evolution Strategy
-
-Adous uses **ALTER TABLE** when possible to preserve data.
-
-### Table Change Detection
-
-Compare old and new table definitions:
-
-| Change Type     | Action                      | Data Preserved |
-|-----------------|-----------------------------|----------------|
-| Add Column      | ALTER TABLE ADD             | ✅ Yes          |
-| Drop Column     | ALTER TABLE DROP            | ⚠️ Column lost |
-| Modify Column   | ALTER TABLE ALTER COLUMN    | ✅ Yes*         |
-| Add Constraint  | ALTER TABLE ADD CONSTRAINT  | ✅ Yes          |
-| Drop Constraint | ALTER TABLE DROP CONSTRAINT | ✅ Yes          |
-| Add Index       | CREATE INDEX                | ✅ Yes          |
-| Drop Index      | DROP INDEX                  | ✅ Yes          |
-| Rename Column   | sp_rename                   | ✅ Yes          |
-| Table Rename    | sp_rename                   | ✅ Yes          |
-
-*May fail if data incompatible with new type (e.g., VARCHAR to INT with non-numeric data).
-
-### DROP and CREATE Fallback
-
-If ALTER fails or change is too complex (e.g., changing column order):
-1. Generate DROP TABLE (with warning)
-2. Generate CREATE TABLE
-3. Require explicit confirmation (force flag)
-
-### Data Migration Scripts
-
-For complex schema changes, Adous cannot auto-generate data migration. Users should:
-1. Export data
-2. Apply schema change
-3. Re-import data with transformation
-
-## Index Filtering
-
-Not all indexes can be recreated from metadata.
-
-### Valid Index Types
-
-- **Clustered Index:** Supported
-- **Non-Clustered Index:** Supported
-- **Unique Index:** Supported
-- **Filtered Index:** Supported (WHERE clause preserved)
-- **Columnstore Index:** Supported
-
-### Invalid Index Scenarios
-
-Indexes are **excluded** if:
-
-1. **Column type not indexable:**
-   - `VARCHAR(MAX)`
-   - `NVARCHAR(MAX)`
-   - `VARBINARY(MAX)`
-   - `TEXT`, `NTEXT`, `IMAGE` (deprecated types)
-   - `XML`
-   - `GEOGRAPHY`, `GEOMETRY`
-
-2. **Computed column index:** Requires persisted computed column
-
-3. **Index on view:** Handled separately with indexed view DDL
-
-4. **Full-text index:** Managed via full-text catalog
-
-### Index Extraction Logic
-
-```sql
--- Pseudo-code
-FOR EACH index IN sys.indexes:
-    FOR EACH column IN index_columns:
-        IF column.type IN (excluded_types):
-            SKIP index
-    IF index is valid:
-        GENERATE CREATE INDEX statement
-```
-
-## Tagging Strategy
-
-Git tags track which commit each database is synced to.
-
-### Tag Format
+| Component | Responsibility |
+|---|---|
+| `SynchronizerController` | REST endpoints (`init-repo`, `db-to-repo`, `repo-to-db`) |
+| `DatabaseRepositorySynchronizerService` | Orchestrates the flows, out-of-sync and data-loss checks, per-database results |
+| `GitService` (+ `GitCommitService`, `GitRemoteService`, `GitDiffService`, `GitRepository`) | In-memory commits, tags, fetch and push (JGit), diffs between commits |
+| `MSSQLDatabaseService` | Extracts definitions from system catalogs, orders and applies changes |
+| `TableAlterScriptGenerator` | Turns a table definition change into `ALTER TABLE` statements; flags data-loss statements |
+| `SequenceAlterScriptGenerator` | Applies sequence changes with `ALTER SEQUENCE`, keeping the current value |
+| `ModuleDefinitionRewriter` | Rewrites module definitions to `CREATE OR ALTER` (and back when reading) |
+| `SqlEquivalenceCheckerService` | Compares definitions while ignoring formatting differences |
+| `SynchronizerIgnoreService` | Applies `.syncignore` glob patterns to repository paths |
+
+## Repository Layout
 
 ```
-{prefix-path}/{databaseName}
+base/{TYPE}/{schema}/{name}.sql                    canonical definition
+diff/{prefix-path}/{db}/{TYPE}/{schema}/{name}.sql database-specific override
 ```
 
-**Example:** `cdt-env/production-db`
+- `{TYPE}` is the object type in upper case (`TABLE`, `VIEW`, `PROCEDURE`, ...). `{schema}`, `{name}` and `{db}` are lower case.
+- An override replaces the base definition for that database only.
+- An **empty** override file means the object does not exist in that database.
+- `prefix-path` (`GIT_PREFIX_PATH`) separates overrides for different deployments of Adous sharing one repository.
 
-### Tag Usage
+## Sync Flows
 
-- **Sync Detection:** Check if database tag matches repo HEAD
-- **Out-of-Sync Warning:** If tags differ, warn user before applying
-- **Force Sync:** Override tag check with `force: true`
-- **History Tracking:** View sync history via Git tag log
+### init-repo
 
-### Tag Operations
+1. Requires an empty repository.
+2. Extracts every object from the database (minus `.syncignore` matches) and writes it to `base/`.
+3. Commits, pushes, and creates the database's tag on that commit.
 
-**Create Tag (after sync):**
-```java
-git.tag()
-   .setName(prefixPath + "/" + dbName)
-   .setMessage("Synced " + dbName)
-   .call();
-```
+### db-to-repo
 
-## Concurrency Model
+1. Fetches, then compares the database with the repository. If the database has a tag, the comparison uses the tagged commit; otherwise it uses `HEAD`.
+2. For each object, it compares the database definition with the `base/` and override files:
 
-Adous uses **Java Virtual Threads** (Project Loom) for parallel processing.
+| Database definition | Result | Response `action` |
+|---|---|---|
+| equals `base/` | override file removed, if one exists | `DELETE` |
+| object missing | empty override written | `MARK_ABSENT` |
+| differs from `base/` and from the override | override written | `WRITE` |
 
-### Parallel Operations
+3. Objects that already match `HEAD` (in `base/` or the override) are dropped from the list, so changes others committed meanwhile aren't reverted.
+4. If anything changed (and it isn't a dry run), it commits, pushes, and creates the database's tag if it didn't have one yet.
 
-- **Multi-Database Sync:** Each database synced in parallel virtual thread
-- **Object Discovery:** Queries for different object types run concurrently
-- **File I/O:** Read/write operations parallelized
+> **db-to-repo never changes `base/`.** After `init-repo`, changes from a database are always recorded as overrides for that database. To make a change canonical for all databases, edit the `base/` file in Git (for example, promote the override in a pull request).
 
-### Synchronization Guarantees
+### repo-to-db
 
-- **Git Operations:** Serialized per repository (JGit not thread-safe)
-- **Database Transactions:** Each DDL batch in separate transaction
-- **File System:** Concurrent writes to different files; atomic rename for same file
+For each requested database, in parallel:
 
-### Error Handling
+1. **Commit check:** if `commitish` is not `HEAD` of the default branch, the run becomes a **dry run** unless `force: true`.
+2. **Safety checks** (skipped with `force: true`):
+   - The database must have a tag; otherwise it's skipped with `SKIPPED_NOT_ONBOARDED`.
+   - The database must match the repository at its tag; otherwise it's skipped with `SKIPPED_OUT_OF_SYNC`.
+3. **Changes to apply:** Git diff between the database's tag and `commitish`, over `base/` and the database's overrides.
+   - A changed `base/` file applies only if the database has no override for it.
+   - A changed override always applies.
+   - A removed override applies the `base/` definition.
+   - A database without a tag (only possible with `force`) gets everything.
+4. **Data-loss check:** if the changes would drop a table or column and `allowDataLoss` is false, the database is skipped with `SKIPPED_DATA_LOSS`. This check also runs in dry runs.
+5. **Apply:** unless it's a dry run, the changes are applied in one transaction (see [Applying Changes](#applying-changes)). The tag then moves to `commitish` and is pushed. If either step fails, the transaction rolls back.
 
-- **Partial Failures:** One database failure doesn't stop others
-- **Rollback:** DDL changes not transactional (SQL Server DDL auto-commits)
-- **Reporting:** Collect all errors and return aggregate result
+## Object Extraction
 
-## Performance Considerations
+| Type | Source |
+|---|---|
+| Procedures, functions, views, DML triggers | `sys.objects` + `sys.sql_modules`, with the module's `ANSI_NULLS` / `QUOTED_IDENTIFIER` settings prepended as `SET` statements |
+| Tables | `sys.tables`, `sys.columns`, `sys.key_constraints`, `sys.foreign_keys`, `sys.check_constraints`, `sys.indexes` |
+| Sequences | `sys.sequences` (start value, not current value) |
+| Synonyms | `sys.synonyms` |
+| Table types, scalar types | `sys.table_types`, `sys.types` |
+| Full-text catalogs | `sys.fulltext_catalogs` |
 
-### Optimization Strategies
+Objects with `is_ms_shipped = 1` are excluded. CLR modules (no `sys.sql_modules` row) and database-level DDL triggers are not extracted.
 
-1. **Lazy Discovery:** Only query needed object types
-2. **Incremental Sync:** Only process changed objects
-3. **Batch Execution:** Group small DDL statements
-4. **Connection Pooling:** Reuse database connections
-5. **Git Pack Files:** Efficient storage for many small files
+**Constraint names:** system-generated names are replaced so definitions are the same across databases:
 
-### Scalability Limits
+| Constraint | Generated name |
+|---|---|
+| Primary key | `PK_{table}` |
+| Unique | `UQ_{table}_{columns}` |
+| Foreign key | `FK_{table}_{referenced table}` |
+| Check | `CK_{table}_{hash of the expression}` |
 
-- **Large Schemas:** 10,000+ objects may take several minutes
-- **Large Views:** Complex views with many dependencies slow parsing
-- **Network Latency:** Remote Git push time depends on repo size
-- **Concurrent Users:** Single Adous instance recommended per repo
+Column defaults are written inline (`DEFAULT (...)`) without a constraint name. User-chosen names are kept.
 
-## Future Enhancements
+**Indexes:** indexes are written as `CREATE [UNIQUE] INDEX ... ON ... (columns) [WHERE filter]`. Indexes on `text`, `ntext`, `image`, `xml` or `(n)varchar(max)` / `varbinary(max)` columns are skipped with a warning.
 
-- **PostgreSQL Support:** Extend beyond SQL Server
-- **Schema Validation:** Pre-flight checks before applying
-- **Rollback Scripts:** Generate undo DDL
-- **Change Approvals:** Integrate with PR workflows
-- **Performance Metrics:** Track sync duration and object counts
-- **Differential Backup:** Incremental Git storage optimization
+## SQL Equivalence
+
+Definitions are compared after normalization, so cosmetic differences don't count as changes:
+- comments removed; case, whitespace and semicolons normalized
+- `CREATE OR ALTER` treated as `CREATE`
+- `[brackets]` around simple identifiers and the default-schema prefix removed
+- parentheses around literals, operator spacing, default values and data type spellings normalized
+- table columns and index statements sorted
+
+## Applying Changes
+
+**Order:** changes are applied in this order:
+1. Tables, sorted by foreign keys so referenced tables come first
+2. Full-text catalogs
+3. Scalar and table types
+4. Sequences
+5. Synonyms
+6. Functions and procedures
+7. Triggers
+8. Views, sorted by references between the views being applied
+
+Missing schemas are created first.
+
+**How each type is applied:**
+
+| Type | Change | Deletion |
+|---|---|---|
+| Table | `ALTER TABLE` statements generated from the old and new definitions; new tables are created | `DROP TABLE` (needs `allowDataLoss`) |
+| Procedure, function, view, trigger | `CREATE OR ALTER`, which keeps the object's permissions; a function whose kind changes (scalar, inline or multi-statement) is dropped and recreated | `DROP` |
+| Sequence | `ALTER SEQUENCE`, keeping the current value; `START WITH` restarts only an unused sequence; a data type change recreates it | `DROP` |
+| Synonym, types, full-text catalog | `DROP` + `CREATE` | `DROP` |
+
+**Table changes:**
+
+| Change | Statement | Data |
+|---|---|---|
+| Add column | `ALTER TABLE ADD` | kept |
+| Change type / nullability | `ALTER TABLE ALTER COLUMN` (dependent indexes dropped and recreated) | kept, or the statement fails if values don't convert |
+| Remove column | `ALTER TABLE DROP COLUMN` (dependent constraints dropped first) | **lost**, needs `allowDataLoss` |
+| Rename column | seen as remove + add | **lost**, needs `allowDataLoss` |
+| All data columns replaced | table dropped and recreated | **lost**, needs `allowDataLoss` |
+| Primary key change | constraint dropped and re-added; foreign keys referencing it are dropped and **not** re-created | kept |
+| New check constraint | `ALTER TABLE ADD` | kept |
+| Indexes | all indexes in the definition are dropped (if present) and recreated | kept |
+| Identity change | not applied; a warning is logged | — |
+
+**Not applied to existing tables:**
+- added or removed foreign keys and unique constraints
+- removed check constraints
+- removed indexes
+- changed column defaults
+
+Renames are not detected. Do them by hand, then run db-to-repo.
+
+**GO batches:** scripts are split on lines that contain only `GO` (case-insensitive), and each batch is sent separately. `GO n` and `GO` inside comments or strings are not recognized.
+
+## Tagging
+
+Each database has one Git tag named after it, in lower case (for example `orders_prod`). The tag marks the commit the database matches.
+
+- Created by `init-repo`, or by the database's first db-to-repo.
+- Moved to `commitish` after every successful repo-to-db, including when there was nothing to apply.
+- Pushed to the remote with force (the tag moves).
+
+To see which commit a database is on, run `git rev-parse orders_prod` or `git log -1 orders_prod`. Tags are not versioned per sync. Git history of the repository is the audit trail.
+
+## Concurrency and Failure Handling
+
+- **One operation at a time:** sync requests are serialized. A second request waits for the first to finish.
+- **Parallel databases:** within a repo-to-db request, databases are processed in parallel, one virtual thread each. Git writes (tag pushes) are serialized.
+- **Per-database failures:** a database that fails is reported as `FAILED`, and the others continue.
+- **Transactions:**
+  - Each database's changes run in one transaction.
+  - If a statement fails, or the tag can't be pushed, the transaction rolls back and the tag isn't moved.
+  - Statements that can't run inside a transaction will fail.
+- **Rejected pushes:**
+  - A push rejected by the remote fails the request, and the local commit is discarded.
+  - Run the request again; it fetches first.
+- **Several Adous instances on one repository:** they don't corrupt it, because rejected pushes are detected. Each should use its own `prefix-path`.
+
+## Known Limitations
+
+- Tags are not prefixed with `prefix-path`. Two deployments sharing a repository with the same database name share a tag.
+- Tables are applied before user-defined types, and views after triggers. A new table using a new type, or a new trigger on a new view, can fail when both arrive in the same sync.
+- Indexes are written without `CLUSTERED` / `COLUMNSTORE` / XML / spatial keywords, so those index types are recreated as regular indexes.
+- Table changes are partial: see [Table changes](#applying-changes). In particular, changing a primary key drops the foreign keys that reference it.
+- Computed columns, full-text indexes, partitioning, indexed views, CLR objects and database-level objects (users, roles, permissions) are not managed. See [MSSQL_FEATURES_SUPPORT.md](MSSQL_FEATURES_SUPPORT.md).
 
 ## See Also
 
 - [Usage Guide](usage.md) - API reference and examples
+- [Supported SQL Server features](MSSQL_FEATURES_SUPPORT.md)
 - [README](../README.md) - Project overview
-

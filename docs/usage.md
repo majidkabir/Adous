@@ -104,10 +104,10 @@ curl -X POST "http://localhost:8080/api/synchronizer/db-to-repo/myDatabase?dryRu
 ```
 
 **Notes:**
-- Detects added, modified, and deleted objects
-- Creates a commit with descriptive message
-- Tags the commit with database name
-- Pushes to remote if configured
+- Records differences as overrides for this database under `diff/`; `base/` is never changed by this endpoint
+- Commits to the default branch (`Repo synced with DB: <db>`) and pushes
+- Creates the database's tag on its first sync (onboarding)
+- Objects already matching the repository's `HEAD` are left alone, so changes committed by others aren't reverted
 
 ---
 
@@ -128,10 +128,10 @@ Content-Type: application/json
 ```
 
 **Request Body:**
-- `commitish` - Git reference (branch name, tag, or SHA)
+- `commitish` - Git reference (branch name, tag, or SHA). Anything other than the head of the default branch runs as a **dry run** unless `force` is true.
 - `dbs` - Array of database names to sync
 - `dryRun` - Preview without applying (default: false)
-- `force` - Force sync even if database out-of-sync (default: false)
+- `force` - Skip the onboarding and out-of-sync checks, and allow a `commitish` other than the head (default: false)
 - `allowDataLoss` - Apply changes that drop tables or columns (default: false). When false, a database whose changes include `DROP TABLE` or `DROP COLUMN` is skipped with status `SKIPPED_DATA_LOSS` and the blocked statements in `message`. Dry runs report this too. `force` does not imply `allowDataLoss`.
 
 **Response:**
@@ -171,7 +171,9 @@ curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
     "force": false
   }'
 
-# Sync specific tag to multiple databases
+# Apply a specific tag to multiple databases.
+# Anything other than the head of main needs force: true, which also skips
+# the out-of-sync check - run a dry run first.
 curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key" \
@@ -179,7 +181,7 @@ curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
     "commitish": "v1.2.3",
     "dbs": ["testDb", "stagingDb"],
     "dryRun": false,
-    "force": false
+    "force": true
   }'
 
 # Preview changes (dry run)
@@ -195,11 +197,12 @@ curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
 ```
 
 **Notes:**
-- Checks if database is in sync (unless `force: true`)
+- Requires each database to be onboarded and to match the repository at its tag (unless `force: true`)
+- Applies only what changed since the database's tag
 - Refuses to drop tables or columns unless `allowDataLoss: true`
-- Applies changes in dependency order
-- Tags commit with database name after success
-- Atomic per database (partial failures reported)
+- Applies changes in dependency order, in one transaction per database
+- Moves the database's tag to `commitish` after success
+- One database failing doesn't stop the others
 
 ---
 
@@ -257,7 +260,7 @@ export SPRING_DATASOURCES_DBS_MYDB_PASSWORD="secret"
 |----------|-------------|---------|
 | `GIT_REMOTE_URI` | Git repository URL | - |
 | `GIT_TOKEN` | GitHub/GitLab personal access token | - |
-| `GIT_PREFIX_PATH` | Optional prefix for paths (e.g., `databases`) | `` |
+| `GIT_PREFIX_PATH` | Folder under `diff/` for this deployment's overrides (e.g. `prod`); use a different one per Adous instance sharing a repository | `` |
 | `GIT_COMMIT_USERNAME` | Git commit author name | `Adous System` |
 | `GIT_COMMIT_EMAIL` | Git commit author email | `adous@mail.com` |
 | `GIT_DEFAULT_BRANCH` | Default branch name | `main` |
@@ -340,11 +343,14 @@ curl -X POST http://localhost:8080/api/synchronizer/init-repo/myDatabase \
 ```bash
 # 1. Developer makes changes in dev database
 
-# 2. Sync dev → repo
+# 2. Sync dev → repo (recorded as dev overrides under diff/)
 curl -X POST "http://localhost:8080/api/synchronizer/db-to-repo/devDb?dryRun=false" \
   -H "X-API-Key: your-api-key"
 
-# 3. Sync repo → test
+# 3. Promote the change: copy the override file over the base/ file in Git
+#    (e.g. in a pull request), so it applies to every database
+
+# 4. Sync repo → test
 curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key" \
@@ -360,24 +366,29 @@ curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
 
 ### Scenario 3: Deploy Specific Version to Production
 
-**Goal:** Deploy a tagged release to production.
+**Goal:** Deploy a tagged version of the schema repository to production.
+
+A `commitish` other than the head of `main` runs as a dry run unless `force: true`, and `force` also skips the out-of-sync check. Preview first:
 
 ```bash
-# 1. Tag a release in Git
+# 1. Tag a version in the schema repository
 git tag v1.0.0
 git push origin v1.0.0
 
-# 2. Sync tagged version to production
+# 2. Preview (dry run)
 curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key" \
-  -d '{
-    "commitish": "v1.0.0",
-    "dbs": ["productionDb"],
-    "dryRun": false,
-    "force": false
-  }'
+  -d '{ "commitish": "v1.0.0", "dbs": ["productionDb"], "dryRun": true }'
+
+# 3. Apply
+curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{ "commitish": "v1.0.0", "dbs": ["productionDb"], "dryRun": false, "force": true }'
 ```
+
+If `v1.0.0` is the head of `main`, `force` isn't needed.
 
 ---
 
@@ -407,11 +418,12 @@ curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
 **Goal:** Prevent temp tables/procedures from being versioned.
 
 ```bash
-# 1. Create .syncignore in src/main/resources/
-cat > src/main/resources/.syncignore <<EOF
+# 1. Create a .syncignore file and point Adous at it
+cat > /etc/adous/.syncignore <<EOF
 **/TABLE/*/temp_*.sql
 **/PROCEDURE/*/temp_*.sql
 EOF
+export GIT_SYNC_IGNORE_FILE=/etc/adous/.syncignore
 
 # 2. Restart Adous
 
@@ -460,70 +472,38 @@ Repo → DB returns `"status": "SUCCESS_DRY_RUN"` per database with the `changes
 
 ## Error Handling
 
-### Common Error Responses
+### HTTP Errors
 
-#### Database Not Configured
-
-```json
-{
-  "error": "Database 'unknownDb' not found in configuration",
-  "status": 404
-}
-```
-
-**Solution:** Add database to `application.yml`.
-
----
-
-#### Database Out of Sync
+Errors return this shape:
 
 ```json
 {
-  "error": "Database 'myDb' is out of sync. Last synced: abc1234, Repository HEAD: def5678. Use force=true to override.",
-  "status": 409
+  "status": 400,
+  "error": "Invalid Argument",
+  "message": "Database unknownDb does not exist",
+  "path": "uri=/api/synchronizer/db-to-repo/unknownDb"
 }
 ```
 
-**Solution:** Either sync the database first, or use `force: true` if you understand the implications.
+| Status | `error` | Typical cause |
+|---|---|---|
+| 400 | `Invalid Argument` | Database name not configured |
+| 400 | `Invalid State` | `init-repo` on a non-empty repository, or a database with no objects |
+| 400 | `Validation Failed` | Invalid `repo-to-db` body; details in `fieldErrors` (e.g. `{"dbs": "At least one database is required"}`) |
+| 401 | — | Missing or wrong `X-API-Key`: `{"error": "Missing API key. Please provide X-API-Key header."}` or `{"error": "Invalid API key."}` |
+| 500 | `Git API Error` | Fetch or push failed, e.g. `Push rejected by remote: refs/heads/main: REJECTED_NONFASTFORWARD` (another writer pushed first; retry) or bad `GIT_TOKEN` |
+| 500 | `IO Error` / `Internal Server Error` | Unexpected failure; check the logs |
 
----
+### Per-Database Results (repo-to-db)
 
-#### Authentication Failed
+Problems with individual databases are **not** HTTP errors. The request returns 200 with one result per database:
 
-```json
-{
-  "error": "Unauthorized",
-  "status": 401
-}
-```
-
-**Solution:** Include valid `X-API-Key` header.
-
----
-
-#### DDL Execution Error
-
-```json
-{
-  "error": "Failed to execute DDL: Invalid object name 'MissingTable'",
-  "status": 500
-}
-```
-
-**Solution:** Check dependency order, verify referenced objects exist.
-
----
-
-#### Git Push Failed
-
-```json
-{
-  "error": "Failed to push to remote: Authentication failed",
-  "status": 500
-}
-```
-
-**Solution:** Verify `GIT_TOKEN` is valid and has push permissions.
+| `status` | Meaning | What to do |
+|---|---|---|
+| `SKIPPED_NOT_ONBOARDED` | The database has no tag yet | Run `init-repo` or `db-to-repo` for it |
+| `SKIPPED_OUT_OF_SYNC` | The database changed outside Git since its last sync; `message` lists the objects | Run `db-to-repo` for it, or use `force` to overwrite those changes |
+| `SKIPPED_DATA_LOSS` | Changes would drop tables or columns; `message` lists the statements | Review, then repeat with `allowDataLoss: true` |
+| `FAILED` | A statement or the tag push failed; nothing was changed for this database | See `message` (e.g. the SQL Server error) |
 
 ---
 
@@ -539,14 +519,14 @@ curl ... -d '{"dryRun": true, ...}'
 curl ... -d '{"dryRun": false, ...}'
 ```
 
-### 2. Tag Releases
+### 2. Tag Versions of the Schema Repository
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-Reference tags in sync operations for reproducibility.
+Reference tags in sync operations for reproducibility. A tag that isn't the head of `main` needs `force: true` (see [Scenario 3](#scenario-3-deploy-specific-version-to-production)).
 
 ### 3. Use .syncignore
 
@@ -554,10 +534,11 @@ Exclude temporary, generated, or environment-specific objects.
 
 ### 4. Monitor Sync Status
 
-Check Git tags to see which commit each database is synced to:
+Each database's tag (its name in lower case) marks the commit it is synced to:
 
 ```bash
-git tag --list "*myDatabase*"
+git fetch --tags --force
+git log -1 --format='%h %ad %s' mydatabase
 ```
 
 ### 5. Regular Syncs
@@ -581,16 +562,15 @@ SQL Server backup:
 BACKUP DATABASE MyDb TO DISK = '/backup/MyDb.bak';
 ```
 
-### 8. Use Branches for Features
+### 8. Review Schema Changes in Pull Requests
 
-Experimental changes:
+Adous reads and writes only the default branch. Branches are still useful for changes made in Git:
 
 ```bash
 git checkout -b feature-new-schema
-# Sync dev db to feature branch
-# Test thoroughly
-git checkout main
-git merge feature-new-schema
+# edit base/ files
+# open a pull request, review, merge to main
+# then repo-to-db from main
 ```
 
 ### 9. Separate Environments
@@ -615,10 +595,10 @@ spring:
 
 ### 10. Monitor Metrics
 
-Check Prometheus metrics for sync performance and errors:
+Prometheus metrics cover HTTP requests (including the sync endpoints' duration and status), JVM and connection pools:
 
 ```bash
-curl -H "X-API-Key: your-api-key" http://localhost:8080/actuator/prometheus | grep adous
+curl -H "X-API-Key: your-api-key" http://localhost:8080/actuator/prometheus | grep http_server_requests
 ```
 
 ---
@@ -657,13 +637,13 @@ curl -H "X-API-Key: your-api-key" http://localhost:8080/actuator/prometheus | gr
 
 ---
 
-### Issue: "Database out of sync" warning
+### Issue: Database skipped with `SKIPPED_OUT_OF_SYNC`
 
-**Cause:** Database tag doesn't match repository HEAD.
+**Cause:** The database was changed outside Git since its last sync; it no longer matches the repository at its tag. `message` lists the objects.
 
 **Solutions:**
-1. Sync database first to bring it up to date
-2. Use `force: true` if you want to override (carefully!)
+1. Run `db-to-repo` for that database to record the changes, then run `repo-to-db` again
+2. Or use `force: true` to overwrite the direct changes (carefully!)
 
 ---
 
@@ -687,8 +667,8 @@ curl -H "X-API-Key: your-api-key" http://localhost:8080/actuator/prometheus | gr
 
 **Solutions:**
 - Use `.syncignore` to exclude unnecessary objects
-- Use local Git repo (no remote push) for faster iteration
 - Increase JVM memory: `-Xmx2g`
+- Note that requests run one at a time; a long repo-to-db delays the next request
 
 ---
 
@@ -703,13 +683,11 @@ curl -H "X-API-Key: your-api-key" http://localhost:8080/actuator/prometheus | gr
 
 ---
 
-### Issue: Cannot see Swagger UI
+### Issue: Swagger UI "Try it out" returns 401
 
-**Cause:** Actuator endpoints not exposed or wrong URL.
+**Cause:** Swagger UI itself is public, but the API needs the `X-API-Key` header, and Swagger UI has no Authorize button for it yet.
 
-**Solution:**
-- Verify `management.endpoints.web.exposure.include` includes `info` and `health`
-- Access: `http://localhost:8080/swagger-ui.html` (not `/swagger-ui/`)
+**Solution:** Use Swagger UI (`http://localhost:8080/swagger-ui.html`) to read the API, and call it with `curl` or another client that sends the header.
 
 ---
 
@@ -726,13 +704,11 @@ curl -H "X-API-Key: your-api-key" http://localhost:8080/actuator/prometheus | gr
 
 ## Advanced Usage
 
-### Custom Commit Messages
+### Commit Messages
 
-Commit messages are auto-generated. To customize:
-
-1. Extend `DatabaseRepositorySynchronizerService`
-2. Override commit message generation method
-3. Rebuild and deploy
+Adous commits as `GIT_COMMIT_USERNAME` / `GIT_COMMIT_EMAIL`, with these messages:
+- `Repo initialized with DB: <db>` (init-repo)
+- `Repo synced with DB: <db>` (db-to-repo)
 
 ### Scheduled Syncs
 
@@ -750,7 +726,7 @@ Deploy Adous in each region with local database configs:
 - Region A: Adous instance → Regional databases → Shared Git repo
 - Region B: Adous instance → Regional databases → Shared Git repo
 
-Use Git branches or prefixes to isolate regions if needed.
+Give each instance its own `GIT_PREFIX_PATH`, and keep database names unique across instances: database tags aren't prefixed, so the same name in two regions would share a tag.
 
 ### Integration with CI/CD
 

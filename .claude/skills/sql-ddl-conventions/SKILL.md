@@ -5,18 +5,12 @@ description: T-SQL DDL conventions and dependency ordering rules for SQL Server 
 
 # SQL DDL Conventions for Adous
 
-## Supported Object Types (in dependency order)
+## Apply Order
 
-1. USER_DEFINED_TYPE
-2. SEQUENCE
-3. TABLE
-4. VIEW
-5. FUNCTION (scalar before table-valued)
-6. PROCEDURE
-7. TRIGGER
-8. SYNONYM
+The order lives in one place: `MSSQLDatabaseService.orderByDependency` / `getDependencyPriority`, documented in `docs/architecture.md` (Applying Changes). When you change it, update that section; don't copy the list elsewhere.
 
-Always apply DDL in this order when syncing repo→db. Reverse the order for drops.
+Current order: tables (FK-sorted) → full-text catalogs → scalar and table types → sequences → synonyms → functions and procedures → triggers → views (sorted by view references).
+Known problem: types should come before tables, and views before triggers that use them.
 
 ## SQL Equivalence Checking
 
@@ -25,7 +19,7 @@ When comparing SQL statements for equivalence:
 - Normalize case for keywords (UPPER)
 - Strip comments before comparison
 - Ignore trailing semicolons
-- Do NOT normalize schema names — dbo.MyTable ≠ MyTable
+- The default schema prefix (`spring.application.database.default-schema`, `dbo`) is removed, so `dbo.MyTable` = `MyTable`; other schemas are kept
 
 ## Safe Table Evolution
 
