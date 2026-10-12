@@ -62,10 +62,10 @@ class SynchronizerControllerTest {
                 new SyncResult("db1", SyncResult.Status.SYNCED, "Changes applied"),
                 new SyncResult("db2", SyncResult.Status.SKIPPED_NOT_ONBOARDED, "")
         );
-        when(synchronizerService.syncRepoToDb(eq("main"), eq(dbs), eq(false), eq(false)))
+        when(synchronizerService.syncRepoToDb(eq("main"), eq(dbs), eq(false), eq(false), eq(false)))
                 .thenReturn(expectedResults);
 
-        SyncRepoToDbRequest request = new SyncRepoToDbRequest("main", dbs, false, false);
+        SyncRepoToDbRequest request = new SyncRepoToDbRequest("main", dbs, false, false, false);
 
         // When & Then
         mockMvc.perform(post("/api/synchronizer/repo-to-db")
@@ -79,13 +79,39 @@ class SynchronizerControllerTest {
     }
 
     @Test
+    void syncRepoToDb_shouldPassAllowDataLossThrough() throws Exception {
+        List<String> dbs = List.of("db1");
+        when(synchronizerService.syncRepoToDb(eq("main"), eq(dbs), eq(false), eq(false), eq(true)))
+                .thenReturn(List.of(new SyncResult("db1", SyncResult.Status.SYNCED, "")));
+
+        mockMvc.perform(post("/api/synchronizer/repo-to-db")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new SyncRepoToDbRequest("main", dbs, false, false, true))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].status").value("SYNCED"));
+    }
+
+    @Test
+    void syncRepoToDb_shouldDefaultAllowDataLossToFalseWhenOmitted() throws Exception {
+        when(synchronizerService.syncRepoToDb(eq("main"), eq(List.of("db1")), eq(false), eq(false), eq(false)))
+                .thenReturn(List.of(new SyncResult("db1", SyncResult.Status.SKIPPED_DATA_LOSS, "blocked")));
+
+        mockMvc.perform(post("/api/synchronizer/repo-to-db")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"commitish\":\"main\",\"dbs\":[\"db1\"]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].status").value("SKIPPED_DATA_LOSS"));
+    }
+
+    @Test
     void syncRepoToDb_withIOError_shouldReturnInternalServerError() throws Exception {
         // Given
         List<String> dbs = List.of("db1");
-        when(synchronizerService.syncRepoToDb(anyString(), anyList(), anyBoolean(), anyBoolean()))
+        when(synchronizerService.syncRepoToDb(anyString(), anyList(), anyBoolean(), anyBoolean(), anyBoolean()))
                 .thenThrow(new IOException("IO error"));
 
-        SyncRepoToDbRequest request = new SyncRepoToDbRequest("main", dbs, false, false);
+        SyncRepoToDbRequest request = new SyncRepoToDbRequest("main", dbs, false, false, false);
 
         // When & Then
         mockMvc.perform(post("/api/synchronizer/repo-to-db")
@@ -97,7 +123,7 @@ class SynchronizerControllerTest {
     @Test
     void syncRepoToDb_withEmptyDbs_shouldReturnBadRequest() throws Exception {
         // Given
-        SyncRepoToDbRequest request = new SyncRepoToDbRequest("main", List.of(), false, false);
+        SyncRepoToDbRequest request = new SyncRepoToDbRequest("main", List.of(), false, false, false);
 
         // When & Then
         mockMvc.perform(post("/api/synchronizer/repo-to-db")
@@ -109,7 +135,7 @@ class SynchronizerControllerTest {
     @Test
     void syncRepoToDb_withBlankCommitish_shouldReturnBadRequest() throws Exception {
         // Given
-        SyncRepoToDbRequest request = new SyncRepoToDbRequest("", List.of("db1"), false, false);
+        SyncRepoToDbRequest request = new SyncRepoToDbRequest("", List.of("db1"), false, false, false);
 
         // When & Then
         mockMvc.perform(post("/api/synchronizer/repo-to-db")

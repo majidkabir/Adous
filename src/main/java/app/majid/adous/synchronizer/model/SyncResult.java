@@ -27,6 +27,9 @@ public record SyncResult(
         @Schema(description = "Skipped - database is out of sync (use force to override)")
         SKIPPED_OUT_OF_SYNC,
 
+        @Schema(description = "Skipped - changes would drop tables or columns (use allowDataLoss to override)")
+        SKIPPED_DATA_LOSS,
+
         @Schema(description = "Synchronization failed")
         FAILED
     }

@@ -120,6 +120,7 @@ Content-Type: application/json
 - `dbs` - Array of database names to sync
 - `dryRun` - Preview without applying (default: false)
 - `force` - Force sync even if database out-of-sync (default: false)
+- `allowDataLoss` - Apply changes that drop tables or columns (default: false). When false, a database whose changes include `DROP TABLE` or `DROP COLUMN` is skipped with status `SKIPPED_DATA_LOSS` and the blocked statements in `message`. Dry runs report this too. `force` does not imply `allowDataLoss`.
 
 **Response:**
 ```json
@@ -171,6 +172,7 @@ curl -X POST http://localhost:8080/api/synchronizer/repo-to-db \
 
 **Notes:**
 - Checks if database is in sync (unless `force: true`)
+- Refuses to drop tables or columns unless `allowDataLoss: true`
 - Applies changes in dependency order
 - Tags commit with database name after success
 - Atomic per database (partial failures reported)

@@ -32,7 +32,7 @@ When comparing SQL statements for equivalence:
 Tables require special care:
 - Column additions: safe, apply directly
 - Column renames: NEVER auto-rename — flag as manual intervention required
-- Column drops: require --force flag and explicit user confirmation
+- Column and table drops: blocked unless the request sets `allowDataLoss=true` (separate from `force`); otherwise the DB is skipped with `SKIPPED_DATA_LOSS`
 - Type changes: always check implicit conversion compatibility first
 
 ## .syncignore Pattern Matching

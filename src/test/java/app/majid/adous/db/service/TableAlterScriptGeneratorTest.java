@@ -809,5 +809,109 @@ class TableAlterScriptGeneratorTest {
             assertEquals(0, columnCount, "Created_date column should be dropped");
         }
     }
-}
 
+    @Nested
+    @DisplayName("Data Loss Detection Tests")
+    class DataLossDetectionTests {
+
+        private static final String USERS_WITHOUT_OLD_FIELD = """
+                CREATE TABLE [dbo].[test_users]
+                (
+                    [id] int IDENTITY(1,1) NOT NULL,
+                    [username] nvarchar(100) NOT NULL,
+                    CONSTRAINT [PK_test_users] PRIMARY KEY ([id])
+                );
+                GO
+                """;
+
+        @Test
+        @DisplayName("Should flag DROP COLUMN for a removed column")
+        void shouldFlagDropColumnWhenColumnRemoved() {
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        username NVARCHAR(100) NOT NULL,
+                        old_field NVARCHAR(50) NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            var statements = alterScriptGenerator.findDataLossStatements(
+                    new DbObject("dbo", "test_users", DbObjectType.TABLE, USERS_WITHOUT_OLD_FIELD));
+
+            assertEquals(1, statements.size(), statements::toString);
+            assertTrue(statements.getFirst().contains("DROP COLUMN [old_field]"));
+        }
+
+        @Test
+        @DisplayName("Should not flag additive changes")
+        void shouldNotFlagWhenColumnAdded() {
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_users (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        CONSTRAINT PK_test_users PRIMARY KEY (id)
+                    )
+                    """);
+
+            var statements = alterScriptGenerator.findDataLossStatements(
+                    new DbObject("dbo", "test_users", DbObjectType.TABLE, USERS_WITHOUT_OLD_FIELD));
+
+            assertTrue(statements.isEmpty(), statements::toString);
+        }
+
+        @Test
+        @DisplayName("Should not flag a new table")
+        void shouldNotFlagWhenTableIsNew() {
+            var statements = alterScriptGenerator.findDataLossStatements(
+                    new DbObject("dbo", "test_users", DbObjectType.TABLE, USERS_WITHOUT_OLD_FIELD));
+
+            assertTrue(statements.isEmpty(), statements::toString);
+        }
+
+        @Test
+        @DisplayName("Should flag DROP TABLE when an existing table is removed")
+        void shouldFlagDropTableWhenTableRemoved() {
+            jdbcTemplate.execute("CREATE TABLE dbo.test_users (id INT NOT NULL)");
+
+            var statements = alterScriptGenerator.findDataLossStatements(
+                    new DbObject("dbo", "test_users", DbObjectType.TABLE, null));
+
+            assertEquals(java.util.List.of("DROP TABLE [dbo].[test_users];"), statements);
+        }
+
+        @Test
+        @DisplayName("Should not flag removal of a table that does not exist")
+        void shouldNotFlagWhenRemovedTableDoesNotExist() {
+            var statements = alterScriptGenerator.findDataLossStatements(
+                    new DbObject("dbo", "test_users", DbObjectType.TABLE, null));
+
+            assertTrue(statements.isEmpty(), statements::toString);
+        }
+
+        @Test
+        @DisplayName("Should flag DROP TABLE when the table would be recreated")
+        void shouldFlagDropTableWhenAllDataColumnsReplaced() {
+            jdbcTemplate.execute("""
+                    CREATE TABLE dbo.test_products (
+                        id INT IDENTITY(1,1) NOT NULL,
+                        old_name NVARCHAR(50) NULL,
+                        CONSTRAINT PK_test_products PRIMARY KEY (id)
+                    )
+                    """);
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_products]
+                    (
+                        [id] int IDENTITY(1,1) NOT NULL,
+                        [new_name] nvarchar(50) NULL,
+                        CONSTRAINT [PK_test_products] PRIMARY KEY ([id])
+                    );
+                    GO
+                    """;
+
+            var statements = alterScriptGenerator.findDataLossStatements(
+                    new DbObject("dbo", "test_products", DbObjectType.TABLE, gitDefinition));
+
+            assertTrue(statements.stream().anyMatch(s -> s.startsWith("DROP TABLE")), statements::toString);
+        }
+    }
+}

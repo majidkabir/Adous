@@ -84,6 +84,17 @@ public class MSSQLDatabaseService implements DatabaseService {
         logger.info("Successfully applied database changes");
     }
 
+    @Override
+    public List<String> findDataLossOperations(List<DbObject> dbChanges) {
+        if (dbChanges == null) {
+            return List.of();
+        }
+        return dbChanges.stream()
+                .filter(change -> change.type() == DbObjectType.TABLE)
+                .flatMap(change -> tableAlterScriptGenerator.findDataLossStatements(change).stream())
+                .toList();
+    }
+
     /**
      * Builds the SQL query to retrieve database objects with their complete definitions.
      * Includes SET options (ANSI_NULLS, QUOTED_IDENTIFIER) required for SQL Server objects.

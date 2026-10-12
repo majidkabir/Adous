@@ -79,6 +79,45 @@ public class TableAlterScriptGenerator {
     }
 
     /**
+     * Statements in a generated table script that destroy data: dropping the whole
+     * table (also used when a table is recreated) or dropping a column.
+     */
+    private static final Pattern DATA_LOSS_STATEMENT = Pattern.compile(
+            "^\\s*(DROP\\s+TABLE\\b.*|ALTER\\s+TABLE\\s+.+?\\s+DROP\\s+COLUMN\\b.*)$",
+            Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
+
+    /**
+     * Returns the statements that syncing this table would run and that can destroy
+     * existing data: {@code DROP TABLE} (table removed from the repo, or recreated
+     * because all data columns change) and {@code DROP COLUMN}.
+     * Returns an empty list when the change only adds or alters structure.
+     *
+     * @param tableObject the table as it should look after sync; a {@code null}
+     *                    definition means the table is being removed
+     */
+    public List<String> findDataLossStatements(DbObject tableObject) {
+        if (tableObject.definition() == null) {
+            return tableExists(tableObject.schema(), tableObject.name())
+                    ? List.of(String.format("DROP TABLE [%s].[%s];", tableObject.schema(), tableObject.name()))
+                    : List.of();
+        }
+
+        if (!tableExists(tableObject.schema(), tableObject.name())) {
+            // New tables are created from scratch; nothing to lose
+            return List.of();
+        }
+
+        String script = generateAlterScript(tableObject);
+
+        List<String> statements = new ArrayList<>();
+        Matcher matcher = DATA_LOSS_STATEMENT.matcher(script);
+        while (matcher.find()) {
+            statements.add(matcher.group(1).trim());
+        }
+        return statements;
+    }
+
+    /**
      * Checks if a table exists in the database.
      */
     private boolean tableExists(String schema, String name) {

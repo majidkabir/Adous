@@ -4,6 +4,7 @@ import app.majid.adous.db.aspect.UseDatabase;
 import app.majid.adous.db.config.DatabaseContextHolder;
 import app.majid.adous.git.service.GitService;
 import app.majid.adous.synchronizer.db.DatabaseService;
+import app.majid.adous.synchronizer.exception.DataLossException;
 import app.majid.adous.synchronizer.exception.DbNotOnboardedException;
 import app.majid.adous.synchronizer.exception.DbOutOfSyncException;
 import app.majid.adous.synchronizer.model.DbObject;
@@ -138,28 +139,34 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
         return outOfSyncObjects.toString();
     }
 
-    public List<SyncResult> syncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force)
+    @Override
+    public List<SyncResult> syncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force,
+                                         boolean allowDataLoss)
             throws IOException, GitAPIException {
         if (dbs == null || dbs.isEmpty()) {
             logger.debug("No databases specified for sync");
             return Collections.emptyList();
         }
 
-        logger.info("Syncing repository commit '{}' to {} databases (dryRun: {}, force: {})",
-                commitish, dbs.size(), dryRun, force);
+        logger.info("Syncing repository commit '{}' to {} databases (dryRun: {}, force: {}, allowDataLoss: {})",
+                commitish, dbs.size(), dryRun, force, allowDataLoss);
         if (force) {
             logger.warn("force=true: skipping onboarding and out-of-sync checks for {}", dbs);
+        }
+        if (allowDataLoss) {
+            logger.warn("allowDataLoss=true: tables and columns may be dropped in {}", dbs);
         }
 
         operationLock.lock();
         try {
-            return doSyncRepoToDb(commitish, dbs, dryRun, force);
+            return doSyncRepoToDb(commitish, dbs, dryRun, force, allowDataLoss);
         } finally {
             operationLock.unlock();
         }
     }
 
-    private List<SyncResult> doSyncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force)
+    private List<SyncResult> doSyncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force,
+                                            boolean allowDataLoss)
             throws IOException, GitAPIException {
         // Ensure local repo is up to date
         gitService.syncRemote();
@@ -175,7 +182,8 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<CompletableFuture<SyncResult>> futures = dbs.stream()
                     .map(dbName -> CompletableFuture.supplyAsync(() ->
-                            syncDatabaseWithExceptionHandling(commitish, dbName, finalDryRun, force),
+                            syncDatabaseWithExceptionHandling(commitish, dbName, finalDryRun, force,
+                                    allowDataLoss),
                             executor))
                     .toList();
 
@@ -192,10 +200,10 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
      * Syncs a single database with proper exception handling.
      */
     private SyncResult syncDatabaseWithExceptionHandling(String commitish, String dbName,
-                                                         boolean dryRun, boolean force) {
+                                                         boolean dryRun, boolean force, boolean allowDataLoss) {
         dbName = DatabaseContextHolder.normalize(dbName);
         try {
-            String result = syncRepoToDb(commitish, dbName, dryRun, force);
+            String result = syncRepoToDb(commitish, dbName, dryRun, force, allowDataLoss);
             SyncResult.Status status = dryRun ? SyncResult.Status.SUCCESS_DRY_RUN : SyncResult.Status.SYNCED;
             logger.info("Successfully synced database '{}' (status: {})", dbName, status);
             return new SyncResult(dbName, status, result);
@@ -205,6 +213,9 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
         } catch (DbOutOfSyncException e) {
             logger.warn("Database '{}' is out of sync, skipping", dbName);
             return new SyncResult(dbName, SyncResult.Status.SKIPPED_OUT_OF_SYNC, "");
+        } catch (DataLossException e) {
+            logger.warn("Database '{}' skipped: changes would destroy data {}", dbName, e.getStatements());
+            return new SyncResult(dbName, SyncResult.Status.SKIPPED_DATA_LOSS, e.getMessage());
         } catch (IOException | GitAPIException | RuntimeException e) {
             // RuntimeException covers SQL failures (DataAccessException), the rollback
             // wrapper from applyChangesTransactionally and unknown database names, so one
@@ -242,14 +253,19 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
      * @param dbName Database name to sync to
      * @param dryRun If true, only detect changes without applying
      * @param force If true, sync even if database is out of sync
+     * @param allowDataLoss If true, apply changes that drop tables or columns
      * @return String representation of changes applied
      * @throws IOException if Git operations fail
      * @throws GitAPIException if Git API operations fail
      * @throws DbNotOnboardedException if database is not onboarded
      * @throws DbOutOfSyncException if database is out of sync and force is false
+     * @throws DataLossException if the changes would destroy data and allowDataLoss is false
+     *                           (checked in dry run too, so a dry run predicts the real outcome)
      */
-    private String syncRepoToDb(String commitish, String dbName, boolean dryRun, boolean force)
-            throws IOException, GitAPIException, DbNotOnboardedException, DbOutOfSyncException {
+    private String syncRepoToDb(String commitish, String dbName, boolean dryRun, boolean force,
+                                boolean allowDataLoss)
+            throws IOException, GitAPIException, DbNotOnboardedException, DbOutOfSyncException,
+            DataLossException {
 
         try {
             DatabaseContextHolder.setCurrentDb(dbName);
@@ -263,6 +279,13 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
 
             List<DbObject> dbChanges = gitService.getRepoChangesToApplyToDb(commitish, dbName);
             logger.debug("Found {} changes to apply to database '{}'", dbChanges.size(), dbName);
+
+            if (!allowDataLoss && !dbChanges.isEmpty()) {
+                List<String> dataLoss = databaseService.findDataLossOperations(dbChanges);
+                if (!dataLoss.isEmpty()) {
+                    throw new DataLossException(dbName, dataLoss);
+                }
+            }
 
             if (!dryRun) {
                 if (!dbChanges.isEmpty()) {
