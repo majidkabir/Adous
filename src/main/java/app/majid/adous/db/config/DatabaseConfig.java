@@ -30,9 +30,16 @@ public class DatabaseConfig {
 
         Map<Object, Object> dataSources = new HashMap<>();
         for (Map.Entry<String, DbConfig> entry: dbs.entrySet()) {
+            // Routing keys are normalized so lookups are case-insensitive and match
+            // the lower-cased names used for Git tags and diff paths.
+            String key = DatabaseContextHolder.normalize(entry.getKey());
+            if (dataSources.containsKey(key)) {
+                throw new IllegalStateException("Database names must be unique ignoring case; duplicate: "
+                        + entry.getKey());
+            }
             DataSource dataSource = buildDataSource(entry.getValue());
-            dataSources.put(entry.getKey(), dataSource);
-            logger.info("Configured datasource for DB: {}", entry.getKey());
+            dataSources.put(key, dataSource);
+            logger.info("Configured datasource for DB: {}", key);
         }
 
         routing.setTargetDataSources(dataSources);

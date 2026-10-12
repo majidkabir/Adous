@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Core service for synchronizing databases with Git repositories.
@@ -41,6 +42,13 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
     private final SynchronizerIgnoreService ignoreService;
     private final TransactionTemplate transactionTemplate;
 
+    /**
+     * Serializes sync operations. Every operation fetches, diffs against and then mutates
+     * the same local Git repository and the same sync tags, so two overlapping requests
+     * could compute diffs from a state the other one is about to change.
+     */
+    private final ReentrantLock operationLock = new ReentrantLock(true);
+
     public DatabaseRepositorySynchronizerService(
             GitService gitService,
             DatabaseService databaseService,
@@ -56,9 +64,18 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
 
     @UseDatabase("dbName")
     public String initRepo(String dbName) throws IOException, GitAPIException {
-        dbName = dbName.toLowerCase();
+        dbName = DatabaseContextHolder.normalize(dbName);
         logger.info("Initializing repository with database: {}", dbName);
 
+        operationLock.lock();
+        try {
+            return doInitRepo(dbName);
+        } finally {
+            operationLock.unlock();
+        }
+    }
+
+    private String doInitRepo(String dbName) throws IOException, GitAPIException {
         if (!gitService.isEmptyRepo()) {
             throw new IllegalStateException("Cannot initialize non-empty repository");
         }
@@ -87,9 +104,18 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
 
     @UseDatabase("dbName")
     public String syncDbToRepo(String dbName, boolean dryRun) throws IOException, GitAPIException {
-        dbName = dbName.toLowerCase();
+        dbName = DatabaseContextHolder.normalize(dbName);
         logger.info("Syncing database '{}' to repository (dryRun: {})", dbName, dryRun);
 
+        operationLock.lock();
+        try {
+            return doSyncDbToRepo(dbName, dryRun);
+        } finally {
+            operationLock.unlock();
+        }
+    }
+
+    private String doSyncDbToRepo(String dbName, boolean dryRun) throws IOException, GitAPIException {
         // Ensure local repo is up to date
         gitService.syncRemote();
 
@@ -121,7 +147,20 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
 
         logger.info("Syncing repository commit '{}' to {} databases (dryRun: {}, force: {})",
                 commitish, dbs.size(), dryRun, force);
+        if (force) {
+            logger.warn("force=true: skipping onboarding and out-of-sync checks for {}", dbs);
+        }
 
+        operationLock.lock();
+        try {
+            return doSyncRepoToDb(commitish, dbs, dryRun, force);
+        } finally {
+            operationLock.unlock();
+        }
+    }
+
+    private List<SyncResult> doSyncRepoToDb(String commitish, List<String> dbs, boolean dryRun, boolean force)
+            throws IOException, GitAPIException {
         // Ensure local repo is up to date
         gitService.syncRemote();
 
@@ -154,7 +193,7 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
      */
     private SyncResult syncDatabaseWithExceptionHandling(String commitish, String dbName,
                                                          boolean dryRun, boolean force) {
-        dbName = dbName.toLowerCase();
+        dbName = DatabaseContextHolder.normalize(dbName);
         try {
             String result = syncRepoToDb(commitish, dbName, dryRun, force);
             SyncResult.Status status = dryRun ? SyncResult.Status.SUCCESS_DRY_RUN : SyncResult.Status.SYNCED;
@@ -166,10 +205,22 @@ public class DatabaseRepositorySynchronizerService implements SynchronizerServic
         } catch (DbOutOfSyncException e) {
             logger.warn("Database '{}' is out of sync, skipping", dbName);
             return new SyncResult(dbName, SyncResult.Status.SKIPPED_OUT_OF_SYNC, "");
-        } catch (IOException | GitAPIException e) {
+        } catch (IOException | GitAPIException | RuntimeException e) {
+            // RuntimeException covers SQL failures (DataAccessException), the rollback
+            // wrapper from applyChangesTransactionally and unknown database names, so one
+            // failing database is reported as FAILED instead of failing the whole batch.
             logger.error("Failed to sync database '{}'", dbName, e);
-            return new SyncResult(dbName, SyncResult.Status.FAILED, e.getMessage());
+            return new SyncResult(dbName, SyncResult.Status.FAILED, rootCauseMessage(e));
         }
+    }
+
+    private static String rootCauseMessage(Throwable e) {
+        Throwable cause = e;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        String message = cause.getMessage();
+        return message != null ? message : cause.getClass().getSimpleName();
     }
 
     /**
