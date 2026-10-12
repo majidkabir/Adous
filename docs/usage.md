@@ -22,6 +22,8 @@ Interactive API documentation available at:
 http://localhost:8080/swagger-ui.html
 ```
 
+To call the API from Swagger UI, click **Authorize** and enter the API key; it is sent as `X-API-Key`.
+
 ### Initialize Repository
 
 **Initialize an empty Git repository with all objects from a database.**
@@ -685,9 +687,9 @@ curl -H "X-API-Key: your-api-key" http://localhost:8080/actuator/prometheus | gr
 
 ### Issue: Swagger UI "Try it out" returns 401
 
-**Cause:** Swagger UI itself is public, but the API needs the `X-API-Key` header, and Swagger UI has no Authorize button for it yet.
+**Cause:** Swagger UI itself is public, but every API call needs the `X-API-Key` header.
 
-**Solution:** Use Swagger UI (`http://localhost:8080/swagger-ui.html`) to read the API, and call it with `curl` or another client that sends the header.
+**Solution:** In Swagger UI (`http://localhost:8080/swagger-ui.html`), click **Authorize**, enter the value of `API_KEY`, and click **Authorize** again. Swagger UI then sends the header with every "Try it out" request until the page is reloaded.
 
 ---
 
