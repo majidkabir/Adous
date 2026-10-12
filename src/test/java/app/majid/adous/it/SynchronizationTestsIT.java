@@ -421,8 +421,8 @@ class SynchronizationTestsIT {
                 "Expected object not found in database %s: %s".formatted(dbName, expectedObject));
     }
 
-    private ObjectId getTagObjectId(String tag) throws Exception {
-        return repo.findRef(Constants.R_TAGS + tag).getObjectId();
+    private ObjectId getTagObjectId(String dbName) throws Exception {
+        return repo.findRef(gitService.getTag(dbName)).getObjectId();
     }
 
     private ObjectId getHeadObjectId() throws Exception {

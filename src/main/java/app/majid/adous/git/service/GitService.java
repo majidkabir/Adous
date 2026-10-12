@@ -43,6 +43,8 @@ public class GitService {
     private final String baseRootPath;
     private final String diffRootPath;
     private final String defaultBranchRef;
+    /** Normalized prefix-path (no leading/trailing slashes), or "" when not set. */
+    private final String prefix;
 
     /**
      * Guards every operation that mutates local refs or talks to the remote.
@@ -65,12 +67,22 @@ public class GitService {
         this.commitService = commitService;
         this.remoteService = remoteService;
         this.dbObjectMapper = dbObjectMapper;
-        this.baseRootPath = gitProperties.baseRootPath();
-        this.diffRootPath = gitProperties.diffRootPath() + "/" + gitProperties.prefixPath();
+        this.baseRootPath = trimSlashes(gitProperties.baseRootPath());
+        this.prefix = trimSlashes(gitProperties.prefixPath());
+        // An empty prefix must not leave an empty path segment ("diff//db1"): Git rejects such paths
+        String diffRoot = trimSlashes(gitProperties.diffRootPath());
+        this.diffRootPath = prefix.isEmpty() ? diffRoot : diffRoot + "/" + prefix;
         this.defaultBranchRef = Constants.R_HEADS + gitProperties.defaultBranch();
 
-        logger.info("GitService initialized with base path: {}, diff path: {}",
-                baseRootPath, diffRootPath);
+        logger.info("GitService initialized with base path: {}, diff path: {}, tag namespace: {}",
+                baseRootPath, diffRootPath, prefix.isEmpty() ? "(none)" : prefix + "/");
+    }
+
+    static String trimSlashes(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.trim().replaceAll("^/+|/+$", "");
     }
 
     public Optional<String> getFileContent(ObjectId id) {
@@ -143,12 +155,17 @@ public class GitService {
         }
     }
 
-    public void addTags(List<String> tags, String commitish) throws IOException, GitAPIException {
+    /**
+     * Points the sync tag of each database at {@code commitish} and pushes the tags.
+     *
+     * @param dbNames database names (not tag names); see {@link #tagName(String)}
+     */
+    public void addTags(List<String> dbNames, String commitish) throws IOException, GitAPIException {
         writeLock.lock();
         try {
             List<RefSpec> refSpecs = new ArrayList<>();
-            for (String tag : tags) {
-                refSpecs.add(gitRepository.addTagToCommit(tag, commitish));
+            for (String dbName : dbNames) {
+                refSpecs.add(gitRepository.addTagToCommit(tagName(dbName), commitish));
             }
             remoteService.pushTags(refSpecs);
         } finally {
@@ -173,12 +190,38 @@ public class GitService {
         return gitRepository.isHeadCommit(commitish);
     }
 
-    public boolean tagExists(String tagName) throws IOException {
-        return gitRepository.tagExists(getTag(tagName));
+    /**
+     * Whether the database has a sync tag, i.e. has been onboarded.
+     */
+    public boolean tagExists(String dbName) throws IOException {
+        return gitRepository.tagExists(getTag(dbName));
     }
 
-    public String getTag(String tagName) {
-        return Constants.R_TAGS + tagName;
+    /**
+     * Name of the tag that marks the commit a database is synced to:
+     * {@code {prefix-path}/{db}}, or {@code {db}} when no prefix is set. The prefix keeps
+     * deployments that share a repository from sharing tags for databases with the same name.
+     */
+    public String tagName(String dbName) {
+        return prefix.isEmpty() ? dbName : prefix + "/" + dbName;
+    }
+
+    /**
+     * Full ref of the database's sync tag. With a prefix set, a database that only has the
+     * unprefixed tag written before tags were prefixed keeps using it until its next sync
+     * writes the prefixed one.
+     */
+    public String getTag(String dbName) throws IOException {
+        String ref = Constants.R_TAGS + tagName(dbName);
+        if (!prefix.isEmpty() && !gitRepository.tagExists(ref)) {
+            String legacyRef = Constants.R_TAGS + dbName;
+            if (gitRepository.tagExists(legacyRef)) {
+                logger.info("Using legacy unprefixed tag {} for database '{}' until it is synced again",
+                        legacyRef, dbName);
+                return legacyRef;
+            }
+        }
+        return ref;
     }
 
     public String getDiffPath() {

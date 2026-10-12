@@ -15,7 +15,7 @@ Before repo→db sync:
 
 ## Tagging Strategy
 
-Each database has exactly one lightweight tag named after it in lower case (e.g. `orders_prod`), marking the commit the database matches.
+Each database has exactly one lightweight tag, `{prefix-path}/{db}` (or `{db}` without a prefix), lower case (e.g. `prod/orders`), marking the commit the database matches. Build it only through `GitService.tagName` / `getTag`, which also handle the legacy unprefixed tag.
 - Created by init-repo or the database's first db→repo
 - Moved (force-updated and force-pushed) to the applied commitish after every successful repo→db, including when there was nothing to apply
 - Moved only after the DDL succeeded, inside the same transaction: if the push fails, the DDL rolls back

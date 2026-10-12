@@ -48,13 +48,13 @@ Adous keeps a bare clone of the remote repository and fetches before every opera
 
 ```
 base/{TYPE}/{schema}/{name}.sql                    canonical definition
-diff/{prefix-path}/{db}/{TYPE}/{schema}/{name}.sql database-specific override
+diff/[{prefix-path}/]{db}/{TYPE}/{schema}/{name}.sql database-specific override
 ```
 
 - `{TYPE}` is the object type in upper case (`TABLE`, `VIEW`, `PROCEDURE`, ...). `{schema}`, `{name}` and `{db}` are lower case.
 - An override replaces the base definition for that database only.
 - An **empty** override file means the object does not exist in that database.
-- `prefix-path` (`GIT_PREFIX_PATH`) separates overrides for different deployments of Adous sharing one repository.
+- `prefix-path` (`GIT_PREFIX_PATH`) is a namespace for one deployment of Adous: its overrides go under `diff/{prefix-path}/` and its tags are named `{prefix-path}/{db}`. Without a prefix, overrides go straight under `diff/`.
 
 ## Sync Flows
 
@@ -182,13 +182,17 @@ Renames are not detected. Do them by hand, then run db-to-repo.
 
 ## Tagging
 
-Each database has one Git tag named after it, in lower case (for example `orders_prod`). The tag marks the commit the database matches.
+Each database has one Git tag, `{prefix-path}/{db}` or just `{db}` without a prefix, in lower case (for example `prod/orders`). The tag marks the commit the database matches.
 
 - Created by `init-repo`, or by the database's first db-to-repo.
 - Moved to `commitish` after every successful repo-to-db, including when there was nothing to apply.
 - Pushed to the remote with force (the tag moves).
 
-To see which commit a database is on, run `git rev-parse orders_prod` or `git log -1 orders_prod`. Tags are not versioned per sync. Git history of the repository is the audit trail.
+To see which commit a database is on, run `git log -1 prod/orders`. Tags are not versioned per sync. Git history of the repository is the audit trail.
+
+**Upgrading from unprefixed tags:** tags written by version 0.1.0 and earlier have no prefix. With a prefix set, a database whose prefixed tag doesn't exist yet keeps using its old `{db}` tag. Its next successful sync writes `{prefix-path}/{db}`. The old tag is left alone; delete it once every deployment has synced.
+
+A tag can't share its name with another tag's namespace: a deployment without a prefix can't have a database named like another deployment's prefix.
 
 ## Concurrency and Failure Handling
 
@@ -202,11 +206,10 @@ To see which commit a database is on, run `git rev-parse orders_prod` or `git lo
 - **Rejected pushes:**
   - A push rejected by the remote fails the request, and the local commit is discarded.
   - Run the request again; it fetches first.
-- **Several Adous instances on one repository:** they don't corrupt it, because rejected pushes are detected. Each should use its own `prefix-path`.
+- **Several Adous instances on one repository:** they don't corrupt it, because rejected pushes are detected. Each should use its own `prefix-path`, so their overrides and tags don't overlap.
 
 ## Known Limitations
 
-- Tags are not prefixed with `prefix-path`. Two deployments sharing a repository with the same database name share a tag.
 - Indexes are written without `CLUSTERED` / `COLUMNSTORE` / XML / spatial keywords, so those index types are recreated as regular indexes.
 - Table changes are partial: see [Table changes](#applying-changes). In particular, changing a primary key drops the foreign keys that reference it.
 - Computed columns, full-text indexes, partitioning, indexed views, CLR objects and database-level objects (users, roles, permissions) are not managed. See [MSSQL_FEATURES_SUPPORT.md](MSSQL_FEATURES_SUPPORT.md).

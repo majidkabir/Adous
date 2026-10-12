@@ -260,7 +260,7 @@ export SPRING_DATASOURCES_DBS_MYDB_PASSWORD="secret"
 |----------|-------------|---------|
 | `GIT_REMOTE_URI` | Git repository URL | - |
 | `GIT_TOKEN` | GitHub/GitLab personal access token | - |
-| `GIT_PREFIX_PATH` | Folder under `diff/` for this deployment's overrides (e.g. `prod`); use a different one per Adous instance sharing a repository | `` |
+| `GIT_PREFIX_PATH` | Namespace for this deployment: overrides go under `diff/{prefix}/` and tags are named `{prefix}/{db}` (e.g. `prod`). Use a different one per Adous instance sharing a repository | `` |
 | `GIT_COMMIT_USERNAME` | Git commit author name | `Adous System` |
 | `GIT_COMMIT_EMAIL` | Git commit author email | `adous@mail.com` |
 | `GIT_DEFAULT_BRANCH` | Default branch name | `main` |
@@ -534,11 +534,11 @@ Exclude temporary, generated, or environment-specific objects.
 
 ### 4. Monitor Sync Status
 
-Each database's tag (its name in lower case) marks the commit it is synced to:
+Each database's tag marks the commit it is synced to. The tag is named `{prefix}/{db}`, or just `{db}` without a prefix, in lower case:
 
 ```bash
 git fetch --tags --force
-git log -1 --format='%h %ad %s' mydatabase
+git log -1 --format='%h %ad %s' prod/mydatabase
 ```
 
 ### 5. Regular Syncs
@@ -726,7 +726,7 @@ Deploy Adous in each region with local database configs:
 - Region A: Adous instance → Regional databases → Shared Git repo
 - Region B: Adous instance → Regional databases → Shared Git repo
 
-Give each instance its own `GIT_PREFIX_PATH`, and keep database names unique across instances: database tags aren't prefixed, so the same name in two regions would share a tag.
+Give each instance its own `GIT_PREFIX_PATH`. Overrides and database tags are namespaced by it, so the same database name can exist in several regions.
 
 ### Integration with CI/CD
 

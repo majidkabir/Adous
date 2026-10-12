@@ -77,7 +77,7 @@ github:
   token: your-github-token  # Can be set via GIT_TOKEN env var
   base-root-path: base
   diff-root-path: diff
-  prefix-path: ""  # Optional prefix for Git paths (GIT_PREFIX_PATH)
+  prefix-path: ""  # Optional namespace for this deployment's overrides and tags (GIT_PREFIX_PATH)
   commit-username: "Adous System"  # Git commit author (GIT_COMMIT_USERNAME)
   commit-email: "adous@mail.com"  # Git commit email (GIT_COMMIT_EMAIL)
   default-branch: main  # Default branch name (GIT_DEFAULT_BRANCH)
@@ -295,7 +295,7 @@ base/
       {objectName}.sql
 
 diff/
-  {prefix-path}/
+  {prefix-path}/          (only when set)
     {databaseName}/
       {objectType}/
         {schema}/
@@ -312,7 +312,7 @@ diff/
 
 ### Tagging
 
-Each database has one Git tag named after it (lower case). The tag marks the commit the database matches, and moves on every successful repo-to-db. Adous uses it to detect databases that changed outside Git.
+Each database has one Git tag: `{prefix-path}/{db}`, or just `{db}` without a prefix (lower case). The tag marks the commit the database matches, and moves on every successful repo-to-db. Adous uses it to detect databases that changed outside Git.
 
 See [docs/architecture.md](docs/architecture.md) for the details.
 
