@@ -17,6 +17,7 @@ import java.util.Comparator;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 import java.util.Map;
@@ -477,8 +478,15 @@ public class MSSQLDatabaseService implements DatabaseService {
     private void applyObjectChanges(List<DbObject> dbChanges) {
         // Order changes by dependency to avoid "object does not exist" errors
         List<DbObject> orderedChanges = orderByDependency(dbChanges);
+        // Foreign keys of other tables dropped by a table script, by lower-case "schema.table"
+        Map<String, List<TableAlterScriptGenerator.ReferencingForeignKey>> pendingForeignKeys = new LinkedHashMap<>();
 
         orderedChanges.forEach(change -> {
+            if (change.type() == DbObjectType.TABLE) {
+                // A referencing table changed after the drop is synced from its own definition,
+                // which re-adds the foreign key if it still has it
+                pendingForeignKeys.remove(tableKey(change.schema(), change.name()));
+            }
             String sql;
             Optional<String> inPlaceScript = change.definition() == null || change.type() == DbObjectType.TABLE
                     ? Optional.empty()
@@ -488,10 +496,10 @@ public class MSSQLDatabaseService implements DatabaseService {
             if (change.type() == DbObjectType.TABLE) {
                 // For tables, use ALTER script generator to preserve data
                 if (change.definition() != null) {
-                    sql = tableAlterScriptGenerator.generateAlterScript(change);
-                    if (!sql.isEmpty()) {
-                        executeWithGoBatchSeparator(sql);
-                    }
+                    TableAlterScriptGenerator.TableScript tableScript = tableAlterScriptGenerator.generate(change);
+                    executeWithGoBatchSeparator(tableScript.script());
+                    tableScript.droppedReferencingForeignKeys().forEach(fk -> pendingForeignKeys
+                            .computeIfAbsent(tableKey(fk.schema(), fk.table()), k -> new ArrayList<>()).add(fk));
                 } else {
                     // Table deletion - drop the table
                     sql = buildDropQuery(change);
@@ -515,6 +523,21 @@ public class MSSQLDatabaseService implements DatabaseService {
                 executeWithGoBatchSeparator(sqlBuilder.toString());
             }
         });
+
+        // Foreign keys of tables that are not part of this sync
+        pendingForeignKeys.values().stream().flatMap(List::stream).forEach(fk -> {
+            try {
+                executeWithGoBatchSeparator(fk.addStatement());
+            } catch (RuntimeException e) {
+                throw new IllegalStateException(("Could not re-create foreign key [%s] on [%s].[%s] after changing the "
+                        + "columns it references; if its columns must change too, change [%s].[%s] in the same commit: %s")
+                        .formatted(fk.name(), fk.schema(), fk.table(), fk.schema(), fk.table(), e.getMessage()), e);
+            }
+        });
+    }
+
+    private static String tableKey(String schema, String name) {
+        return (schema + "." + name).toLowerCase();
     }
 
     /**

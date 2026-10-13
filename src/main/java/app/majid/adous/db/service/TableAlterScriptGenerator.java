@@ -34,8 +34,36 @@ public class TableAlterScriptGenerator {
     private static final class AlterContext {
         final Set<String> droppedIndexes = new HashSet<>();                  // lower-case names
         final List<String[]> droppedReferencingForeignKeys = new ArrayList<>(); // [schema, table, fk name]
+        Set<String> alteredColumns = Set.of();                               // lower-case; type or nullability changes
         boolean recreated;                                                   // whole table dropped and recreated
         boolean primaryKeyClauseChanged;                                     // e.g. renamed or clustered -> nonclustered
+        boolean primaryKeyColumnAltered;                                     // ALTER COLUMN on a primary key column
+
+        /** Records a dropped foreign key once; returns false if it was already recorded. */
+        boolean addDroppedReferencingForeignKey(String[] fk) {
+            boolean known = droppedReferencingForeignKeys.stream().anyMatch(existing ->
+                    existing[0].equalsIgnoreCase(fk[0]) && existing[1].equalsIgnoreCase(fk[1])
+                            && existing[2].equalsIgnoreCase(fk[2]));
+            if (!known) {
+                droppedReferencingForeignKeys.add(fk);
+            }
+            return !known;
+        }
+    }
+
+    /**
+     * A foreign key of another table that the script for this table drops (because the
+     * referenced key changes), with the statement that re-creates it. The statement does
+     * nothing if the foreign key or its table no longer exists.
+     */
+    public record ReferencingForeignKey(String schema, String table, String name, String addStatement) {
+    }
+
+    /**
+     * Script for one table, without re-creating the foreign keys of other tables that it drops.
+     * The caller re-adds those once the referencing tables are in their final shape.
+     */
+    public record TableScript(String script, List<ReferencingForeignKey> droppedReferencingForeignKeys) {
     }
 
     /**
@@ -46,6 +74,20 @@ public class TableAlterScriptGenerator {
      * @return SQL script (CREATE or ALTER statements) to apply to database
      */
     public String generateAlterScript(DbObject tableObject) {
+        TableScript tableScript = generate(tableObject);
+        StringBuilder script = new StringBuilder(tableScript.script());
+        tableScript.droppedReferencingForeignKeys()
+                .forEach(fk -> script.append(fk.addStatement()).append("\nGO\n"));
+        return script.toString();
+    }
+
+    /**
+     * Like {@link #generateAlterScript(DbObject)}, but foreign keys of other tables dropped by
+     * the script are returned instead of re-added. When the referencing columns change too
+     * (e.g. both sides widened from int to bigint), the foreign key can only be re-added after
+     * the referencing table has been altered.
+     */
+    public TableScript generate(DbObject tableObject) {
         String schema = tableObject.schema();
         String name = tableObject.name();
         logger.debug("Generating alter script for table {}.{}", schema, name);
@@ -53,7 +95,7 @@ public class TableAlterScriptGenerator {
         Optional<TableDefinitionReader.TableModel> current = tableDefinitionReader.read(schema, name);
         if (current.isEmpty()) {
             logger.debug("Table {}.{} doesn't exist, using CREATE TABLE script", schema, name);
-            return tableObject.definition();
+            return new TableScript(tableObject.definition(), List.of());
         }
 
         String gitText = tableObject.definition();
@@ -67,10 +109,20 @@ public class TableAlterScriptGenerator {
         String gitPkClause = parseNamedConstraints(gitText).values().stream()
                 .filter(clause -> PRIMARY_KEY_CLAUSE.matcher(clause).find()).findFirst().orElse(null);
         ctx.primaryKeyClauseChanged = dbPkClause != null && gitPkClause != null && !sameSql(dbPkClause, gitPkClause);
+        ctx.alteredColumns = alteredColumns(dbDefinition, gitDefinition);
+        ctx.primaryKeyColumnAltered = dbDefinition.primaryKeyColumns.stream().anyMatch(ctx.alteredColumns::contains);
+
+        // Foreign keys (of any table) that reference an altered column block the ALTER COLUMN
+        // and the drop of the key they reference, so they go first
+        List<String> statements = new ArrayList<>();
+        for (String[] fk : getForeignKeysReferencingColumns(schema, name, ctx.alteredColumns)) {
+            if (ctx.addDroppedReferencingForeignKey(fk)) {
+                statements.add("ALTER TABLE [%s].[%s] DROP CONSTRAINT IF EXISTS [%s];".formatted(fk[0], fk[1], fk[2]));
+            }
+        }
 
         List<String> alterStatements = generateAlterStatements(schema, name, dbDefinition, gitDefinition, gitText, ctx);
 
-        List<String> statements = new ArrayList<>();
         if (ctx.recreated) {
             // DROP TABLE + the full Git definition (columns, constraints, indexes)
             statements.addAll(alterStatements);
@@ -81,16 +133,29 @@ public class TableAlterScriptGenerator {
             statements.addAll(alterStatements);
             statements.addAll(changes.after());
         }
-        statements.addAll(readdReferencingForeignKeys(schema, name, ctx));
+        List<ReferencingForeignKey> referencingForeignKeys = referencingForeignKeysToReadd(schema, name, ctx);
 
         if (statements.isEmpty()) {
             logger.debug("No changes needed for table {}.{}", schema, name);
-            return "";
         }
 
         StringBuilder script = new StringBuilder();
         statements.forEach(stmt -> script.append(stmt).append("\nGO\n"));
-        return script.toString();
+        return new TableScript(script.toString(), referencingForeignKeys);
+    }
+
+    /** Lower-case names of columns whose type or nullability changes (identity columns are not altered). */
+    private static Set<String> alteredColumns(TableDefinition dbDef, TableDefinition gitDef) {
+        Set<String> altered = new HashSet<>();
+        for (Map.Entry<String, ColumnDefinition> entry : gitDef.columns.entrySet()) {
+            ColumnDefinition dbColumn = dbDef.columns.get(entry.getKey());
+            ColumnDefinition gitColumn = entry.getValue();
+            if (dbColumn != null && !dbColumn.isIdentity && !gitColumn.isIdentity
+                    && (!dbColumn.dataType.equalsIgnoreCase(gitColumn.dataType) || dbColumn.isNullable != gitColumn.isNullable)) {
+                altered.add(entry.getKey());
+            }
+        }
+        return altered;
     }
 
     private record ObjectChanges(List<String> before, List<String> after) {
@@ -114,15 +179,7 @@ public class TableAlterScriptGenerator {
         List<String> after = new ArrayList<>();
         String table = "[%s].[%s]".formatted(schema, name);
 
-        Set<String> alteredColumns = new HashSet<>();
-        for (Map.Entry<String, ColumnDefinition> entry : gitDef.columns.entrySet()) {
-            ColumnDefinition dbColumn = dbDef.columns.get(entry.getKey());
-            ColumnDefinition gitColumn = entry.getValue();
-            if (dbColumn != null && !dbColumn.isIdentity && !gitColumn.isIdentity
-                    && (!dbColumn.dataType.equalsIgnoreCase(gitColumn.dataType) || dbColumn.isNullable != gitColumn.isNullable)) {
-                alteredColumns.add(entry.getKey());
-            }
-        }
+        Set<String> alteredColumns = ctx.alteredColumns;
         Set<String> selfReferencingDropped = new HashSet<>();
         for (String[] fk : ctx.droppedReferencingForeignKeys) {
             if (fk[0].equalsIgnoreCase(schema) && fk[1].equalsIgnoreCase(name)) {
@@ -207,11 +264,12 @@ public class TableAlterScriptGenerator {
     }
 
     /**
-     * Re-creates foreign keys of other tables that were dropped because this table's primary
-     * key changed or the table was recreated. Their definitions are read before the script runs.
+     * Foreign keys of other tables that the script drops because a column or key of this table
+     * they reference changes, or the table is recreated. Their definitions are read before the
+     * script runs.
      */
-    private List<String> readdReferencingForeignKeys(String schema, String name, AlterContext ctx) {
-        List<String> statements = new ArrayList<>();
+    private List<ReferencingForeignKey> referencingForeignKeysToReadd(String schema, String name, AlterContext ctx) {
+        List<ReferencingForeignKey> foreignKeys = new ArrayList<>();
         Map<String, Optional<TableDefinitionReader.TableModel>> parents = new HashMap<>();
         for (String[] fk : ctx.droppedReferencingForeignKeys) {
             if (fk[0].equalsIgnoreCase(schema) && fk[1].equalsIgnoreCase(name)) {
@@ -222,9 +280,22 @@ public class TableAlterScriptGenerator {
             parent.flatMap(model -> model.constraints().stream()
                             .filter(c -> c.dbName().equalsIgnoreCase(fk[2]))
                             .findFirst())
-                    .ifPresent(c -> statements.add("ALTER TABLE [%s].[%s] ADD %s;".formatted(fk[0], fk[1], c.clause())));
+                    .ifPresent(c -> foreignKeys.add(new ReferencingForeignKey(fk[0], fk[1], c.dbName(),
+                            readdStatement(fk[0], fk[1], c.dbName(), c.clause()))));
         }
-        return statements;
+        return foreignKeys;
+    }
+
+    private static String readdStatement(String schema, String table, String fkName, String clause) {
+        String objectName = sqlLiteral("[%s].[%s]".formatted(schema.replace("]", "]]"), table.replace("]", "]]")));
+        return """
+                IF OBJECT_ID(%s, N'U') IS NOT NULL
+                    AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = %s AND parent_object_id = OBJECT_ID(%s))
+                    ALTER TABLE [%s].[%s] ADD %s;""".formatted(objectName, sqlLiteral(fkName), objectName, schema, table, clause);
+    }
+
+    private static String sqlLiteral(String value) {
+        return "N'" + value.replace("'", "''") + "'";
     }
 
     private static final Pattern PRIMARY_KEY_CLAUSE = Pattern.compile("^CONSTRAINT\\s+\\S+\\s+PRIMARY\\s+KEY\\b",
@@ -775,6 +846,9 @@ public class TableAlterScriptGenerator {
                 String parentSchema = fkInfo[0];
                 String parentTable = fkInfo[1];
                 String fkName = fkInfo[2];
+                if (!ctx.addDroppedReferencingForeignKey(fkInfo)) {
+                    continue;
+                }
 
                 statements.add(String.format(
                         "ALTER TABLE [%s].[%s] DROP CONSTRAINT IF EXISTS [%s];",
@@ -782,7 +856,6 @@ public class TableAlterScriptGenerator {
                 ));
                 logger.debug("Dropping foreign key [{}].[{}] before dropping table [{}].[{}]",
                         parentSchema, fkName, schema, name);
-                ctx.droppedReferencingForeignKeys.add(fkInfo);
             }
 
             statements.add(String.format("DROP TABLE IF EXISTS [%s].[%s];", schema, name));
@@ -793,7 +866,8 @@ public class TableAlterScriptGenerator {
 
         // Drop primary key if it exists and needs modification
         boolean primaryKeyChanged = !dbDef.primaryKeyColumns.equals(gitDef.primaryKeyColumns)
-                || ctx.primaryKeyClauseChanged;
+                || ctx.primaryKeyClauseChanged
+                || ctx.primaryKeyColumnAltered; // SQL Server can't alter a column of a primary key in place
         if (dbDef.primaryKeyName != null && primaryKeyChanged) {
             // Before dropping primary key, drop all foreign key constraints that reference it
             List<String[]> referencingForeignKeys = getForeignKeysReferencingPrimaryKey(schema, name);
@@ -801,6 +875,9 @@ public class TableAlterScriptGenerator {
                 String parentSchema = fkInfo[0];
                 String parentTable = fkInfo[1];
                 String fkName = fkInfo[2];
+                if (!ctx.addDroppedReferencingForeignKey(fkInfo)) {
+                    continue;
+                }
 
                 statements.add(String.format(
                         "ALTER TABLE [%s].[%s] DROP CONSTRAINT IF EXISTS [%s];",
@@ -808,7 +885,6 @@ public class TableAlterScriptGenerator {
                 ));
                 logger.debug("Dropping foreign key [{}].[{}] before dropping primary key [{}]",
                         parentSchema, fkName, dbDef.primaryKeyName);
-                ctx.droppedReferencingForeignKeys.add(fkInfo);
             }
 
             statements.add(String.format(
@@ -1114,6 +1190,38 @@ public class TableAlterScriptGenerator {
         }, schema, tableName);
 
         return foreignKeys;
+    }
+
+    /**
+     * Foreign keys (of any table, including this one) that reference one of the given columns
+     * of this table, e.g. through its primary key or a unique constraint.
+     *
+     * @return [parentSchema, parentTable, fkName] per foreign key
+     */
+    private List<String[]> getForeignKeysReferencingColumns(String schema, String tableName, Set<String> columns) {
+        if (columns.isEmpty()) {
+            return List.of();
+        }
+        String query = """
+                SELECT SCHEMA_NAME(pt.schema_id) AS parent_schema, pt.name AS parent_table,
+                       fk.name AS fk_name, rc.name AS referenced_column
+                FROM sys.foreign_keys fk
+                JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+                JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+                JOIN sys.tables pt ON fk.parent_object_id = pt.object_id
+                JOIN sys.tables rt ON fk.referenced_object_id = rt.object_id
+                JOIN sys.schemas rs ON rt.schema_id = rs.schema_id
+                WHERE rs.name = ? AND rt.name = ?
+                ORDER BY parent_schema, parent_table, fk_name
+                """;
+        Map<String, String[]> foreignKeys = new LinkedHashMap<>();
+        jdbcTemplate.query(query, rs -> {
+            if (columns.contains(rs.getString("referenced_column").toLowerCase())) {
+                String[] fk = {rs.getString("parent_schema"), rs.getString("parent_table"), rs.getString("fk_name")};
+                foreignKeys.putIfAbsent(String.join(".", fk).toLowerCase(), fk);
+            }
+        }, schema, tableName);
+        return new ArrayList<>(foreignKeys.values());
     }
 
     /**
