@@ -189,6 +189,73 @@ class TableConstraintChangesTest {
         assertEquals(orderBefore, definition("tc_order"));
     }
 
+    @Test
+    void shouldWidenReferencedPrimaryKeyTogetherWithReferencingColumn() {
+        addOrderCustomerForeignKey();
+        String customer = definition("tc_customer").replace("[id] int NOT NULL", "[id] bigint NOT NULL");
+        String order = definition("tc_order").replace("[customer_id] int NULL", "[customer_id] bigint NULL");
+        assertNotEquals(definition("tc_order"), order, "test setup: column format");
+
+        // Given in the order a sync would list them; the service orders them by foreign key
+        databaseService.applyChangesToDatabase(List.of(table("tc_order", order), table("tc_customer", customer)));
+
+        assertEquals("bigint", columnType("tc_customer", "id"));
+        assertEquals("bigint", columnType("tc_order", "customer_id"));
+        assertEquals(1, count("SELECT COUNT(*) FROM sys.foreign_keys WHERE name = 'FK_tc_order_customer'"));
+        assertEquals(customer, definition("tc_customer"));
+        assertEquals(order, definition("tc_order"));
+        assertEquals(2, count("SELECT COUNT(*) FROM dbo.tc_customer"), "rows are kept");
+    }
+
+    @Test
+    void shouldAlterUniqueColumnReferencedByUnchangedTable() {
+        String withUnique = addClause(definition("tc_customer"), "CONSTRAINT [UQ_tc_customer_email] UNIQUE ([email])");
+        apply("tc_customer", withUnique);
+        jdbcTemplate.execute("""
+                CREATE TABLE dbo.tc_contact (
+                    id int NOT NULL CONSTRAINT PK_tc_contact PRIMARY KEY,
+                    email varchar(100) NULL CONSTRAINT FK_tc_contact_customer REFERENCES dbo.tc_customer (email))
+                """);
+        try {
+            String notNull = withUnique.replace("[email] varchar(100) NULL", "[email] varchar(100) NOT NULL");
+            assertNotEquals(withUnique, notNull, "test setup: column format");
+
+            apply("tc_customer", notNull);
+
+            assertEquals(0, count("""
+                    SELECT COUNT(*) FROM sys.columns
+                    WHERE object_id = OBJECT_ID('dbo.tc_customer') AND name = 'email' AND is_nullable = 1
+                    """));
+            assertEquals(1, count("SELECT COUNT(*) FROM sys.key_constraints WHERE name = 'UQ_tc_customer_email'"));
+            assertEquals(1, count("SELECT COUNT(*) FROM sys.foreign_keys WHERE name = 'FK_tc_contact_customer'"));
+        } finally {
+            jdbcTemplate.execute("DROP TABLE IF EXISTS dbo.tc_contact");
+        }
+    }
+
+    @Test
+    void shouldNameForeignKeyWhenReferencingColumnIsNotChangedToo() {
+        addOrderCustomerForeignKey();
+        String customer = definition("tc_customer").replace("[id] int NOT NULL", "[id] bigint NOT NULL");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> apply("tc_customer", customer));
+
+        assertTrue(error.getMessage().contains("[FK_tc_order_customer] on [dbo].[tc_order]"), error.getMessage());
+    }
+
+    private static void addOrderCustomerForeignKey() {
+        jdbcTemplate.execute("""
+                ALTER TABLE dbo.tc_order ADD CONSTRAINT FK_tc_order_customer
+                    FOREIGN KEY (customer_id) REFERENCES dbo.tc_customer (id)
+                """);
+    }
+
+    private static String columnType(String table, String column) {
+        return jdbcTemplate.queryForObject(
+                "SELECT TYPE_NAME(user_type_id) FROM sys.columns WHERE object_id = OBJECT_ID(?) AND name = ?",
+                String.class, "dbo." + table, column);
+    }
+
     private static String addClause(String definition, String clause) {
         int end = definition.indexOf("\n);");
         return definition.substring(0, end) + ",\n    " + clause + definition.substring(end);

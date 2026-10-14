@@ -176,17 +176,20 @@ The current table is read with the same code that produces repository definition
 | Change | Statements | Data |
 |---|---|---|
 | Add column | `ALTER TABLE ADD` (with its default) | kept |
-| Change type / nullability | `ALTER COLUMN`; the column's indexes, constraints and default are dropped first and re-created after | kept, or the statement fails if values don't convert |
+| Change type / nullability | `ALTER COLUMN`; the column's indexes, constraints and default are dropped first and re-created after. On a primary key column, the primary key is dropped and re-added | kept, or the statement fails if values don't convert |
+| Change a column other tables' foreign keys reference | those foreign keys are dropped first and re-added once the referencing tables have been synced (see below) | kept |
 | Remove column | `DROP COLUMN` (its constraints and indexes dropped first) | **lost**, needs `allowDataLoss` |
 | Rename column | seen as remove + add | **lost**, needs `allowDataLoss` |
 | All data columns replaced | table dropped and recreated | **lost**, needs `allowDataLoss` |
-| Primary key change (columns, name or clustering) | dropped and re-added; foreign keys of other tables that reference it are re-added afterwards | kept |
+| Primary key change (columns, name or clustering) | dropped and re-added; foreign keys of other tables that reference it are dropped first and re-added afterwards | kept |
 | Unique, foreign key or check constraint added / removed / changed | `ADD CONSTRAINT` / `DROP CONSTRAINT` (a changed one is dropped and re-added) | kept |
 | Column default added / removed / changed | `ADD DEFAULT ... FOR` / `DROP CONSTRAINT` | kept |
 | Index added / removed / changed | `CREATE INDEX` / `DROP INDEX` (a changed one is dropped and re-created); unchanged indexes are left alone | kept |
 | Identity change | not applied; a warning is logged | — |
 
 Statements run in this order: drops of removed/changed constraints, defaults and indexes; column and primary key statements; then adds. Constraints are compared by name. Expressions are compared ignoring case, brackets, whitespace and the parentheses SQL Server adds.
+
+**Foreign keys of other tables** dropped because a column or key they reference changes are re-added after all objects are applied. A referencing table that is part of the same sync is synced from its own definition instead, after the referenced table, so both sides of a foreign key can change together (for example `int` to `bigint`). Foreign key columns must match the referenced columns' type and length, so if only the referenced side changes, re-adding fails and the sync fails for that database, naming the foreign key.
 
 A re-added foreign key is checked against existing rows. If rows violate it, the sync fails for that database and nothing changes.
 
@@ -225,7 +228,6 @@ A tag can't share its name with another tag's namespace: a deployment without a 
 ## Known Limitations
 
 - XML, spatial and memory-optimized indexes are not managed.
-- Changing a column that other tables' foreign keys reference (e.g. its type) fails; change those tables by hand.
 - Computed columns, full-text indexes, partitioning, indexed views, CLR objects and database-level objects (users, roles, permissions) are not managed. See [MSSQL_FEATURES_SUPPORT.md](MSSQL_FEATURES_SUPPORT.md).
 
 ## See Also
