@@ -916,4 +916,58 @@ class TableAlterScriptGeneratorTest {
             assertTrue(statements.stream().anyMatch(s -> s.startsWith("DROP TABLE")), statements::toString);
         }
     }
+    @Nested
+    @DisplayName("Identity Tests")
+    class IdentityTests {
+
+        @Test
+        @DisplayName("Should add an identity column with the seed and increment from Git")
+        void shouldAddIdentityColumnWithSeedAndIncrement() {
+            jdbcTemplate.execute("CREATE TABLE dbo.test_products ([name] varchar(50) NOT NULL)");
+            jdbcTemplate.execute("INSERT INTO dbo.test_products ([name]) VALUES ('a'), ('b')");
+
+            String gitDefinition = """
+                    CREATE TABLE [dbo].[test_products]
+                    (
+                        [name] varchar(50) NOT NULL,
+                        [id] bigint IDENTITY (1000, 5) NOT NULL
+                    );
+                    GO
+                    """;
+            String script = alterScriptGenerator.generateAlterScript(
+                    new DbObject("dbo", "test_products", DbObjectType.TABLE, gitDefinition));
+
+            assertTrue(script.contains("ADD [id] bigint IDENTITY(1000,5) NOT NULL"), script);
+            executeSql(script);
+            assertEquals("1000,5", jdbcTemplate.queryForObject("""
+                    SELECT CAST(seed_value AS varchar(40)) + ',' + CAST(increment_value AS varchar(40))
+                    FROM sys.identity_columns WHERE object_id = OBJECT_ID('dbo.test_products')
+                    """, String.class));
+            assertEquals(1005L, jdbcTemplate.queryForObject("SELECT MAX(id) FROM dbo.test_products", Long.class));
+        }
+
+        @Test
+        @DisplayName("Should read identity seeds beyond int range")
+        void shouldReadBigintIdentitySeed() {
+            jdbcTemplate.execute("CREATE TABLE dbo.test_products (id bigint IDENTITY(10000000000,1) NOT NULL, [name] varchar(50) NULL)");
+
+            String definition = new TableDefinitionReader(jdbcTemplate).read("dbo", "test_products").orElseThrow().toDefinition();
+
+            assertTrue(definition.contains("[id] bigint IDENTITY(10000000000,1) NOT NULL"), definition);
+            assertEquals("", alterScriptGenerator.generateAlterScript(
+                    new DbObject("dbo", "test_products", DbObjectType.TABLE, definition)), "nothing to change");
+        }
+
+        @Test
+        @DisplayName("Should not touch an existing identity column whose seed changed")
+        void shouldNotAlterExistingIdentity() {
+            jdbcTemplate.execute("CREATE TABLE dbo.test_products (id int IDENTITY(1,1) NOT NULL, [name] varchar(50) NULL)");
+            String definition = new TableDefinitionReader(jdbcTemplate).read("dbo", "test_products").orElseThrow().toDefinition();
+
+            String script = alterScriptGenerator.generateAlterScript(new DbObject("dbo", "test_products", DbObjectType.TABLE,
+                    definition.replace("IDENTITY(1,1)", "IDENTITY(100,1)")));
+
+            assertEquals("", script, "IDENTITY can't be changed in place; only a warning is logged");
+        }
+    }
 }

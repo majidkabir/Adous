@@ -175,7 +175,7 @@ The current table is read with the same code that produces repository definition
 
 | Change | Statements | Data |
 |---|---|---|
-| Add column | `ALTER TABLE ADD` (with its default) | kept |
+| Add column | `ALTER TABLE ADD` (with its default, or its `IDENTITY(seed,increment)`) | kept |
 | Change type / nullability | `ALTER COLUMN`; the column's indexes, constraints and default are dropped first and re-created after. On a primary key column, the primary key is dropped and re-added | kept, or the statement fails if values don't convert |
 | Change a column other tables' foreign keys reference | those foreign keys are dropped first and re-added once the referencing tables have been synced (see below) | kept |
 | Remove column | `DROP COLUMN` (its constraints and indexes dropped first) | **lost**, needs `allowDataLoss` |
@@ -185,7 +185,7 @@ The current table is read with the same code that produces repository definition
 | Unique, foreign key or check constraint added / removed / changed | `ADD CONSTRAINT` / `DROP CONSTRAINT` (a changed one is dropped and re-added) | kept |
 | Column default added / removed / changed | `ADD DEFAULT ... FOR` / `DROP CONSTRAINT` | kept |
 | Index added / removed / changed | `CREATE INDEX` / `DROP INDEX` (a changed one is dropped and re-created); unchanged indexes are left alone | kept |
-| Identity change | not applied; a warning is logged | — |
+| Identity added, removed, or seed/increment changed on an existing column | not applied (SQL Server can't alter it in place); a warning is logged | — |
 
 Statements run in this order: drops of removed/changed constraints, defaults and indexes; column and primary key statements; then adds. Constraints are compared by name. Expressions are compared ignoring case, brackets, whitespace and the parentheses SQL Server adds.
 
