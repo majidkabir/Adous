@@ -243,6 +243,77 @@ class TableConstraintChangesTest {
         assertTrue(error.getMessage().contains("[FK_tc_order_customer] on [dbo].[tc_order]"), error.getMessage());
     }
 
+    @Test
+    void shouldAddComputedColumnAndKeepItInExtraction() {
+        String withComputed = withComputedColumn(definition("tc_order"), "([qty]*(2)) PERSISTED");
+
+        apply("tc_order", withComputed);
+
+        assertEquals("([qty]*(2))", jdbcTemplate.queryForObject(
+                "SELECT definition FROM sys.computed_columns WHERE object_id = OBJECT_ID('dbo.tc_order') AND name = 'qty_x2'",
+                String.class));
+        assertEquals(withComputed, definition("tc_order"));
+        assertEquals(6, jdbcTemplate.queryForObject("SELECT qty_x2 FROM dbo.tc_order WHERE id = 10", Integer.class));
+        assertEquals("", generator.generateAlterScript(table("tc_order", withComputed)), "nothing left to change");
+    }
+
+    @Test
+    void shouldRecreateComputedColumnWhenExpressionChangesKeepingItsIndex() {
+        String index = "CREATE INDEX [ix_tc_order_qty_x2] ON [dbo].[tc_order] ([qty_x2]);\nGO\n";
+        apply("tc_order", withComputedColumn(definition("tc_order"), "([qty]*(2)) PERSISTED") + index);
+
+        String changed = withComputedColumn(definitionWithoutComputed(), "([qty]*(3)) PERSISTED"); // index included
+        assertEquals(List.of(), databaseService.findDataLossOperations(List.of(table("tc_order", changed))),
+                "dropping a computed column loses no data");
+        apply("tc_order", changed);
+
+        assertEquals(9, jdbcTemplate.queryForObject("SELECT qty_x2 FROM dbo.tc_order WHERE id = 10", Integer.class));
+        assertEquals(changed, definition("tc_order"));
+    }
+
+    @Test
+    void shouldAlterColumnUsedByComputedColumn() {
+        String withComputed = withComputedColumn(definition("tc_order"), "([qty]*(2))");
+        apply("tc_order", withComputed);
+
+        String widened = withComputed.replace("[qty] int NOT NULL", "[qty] bigint NOT NULL");
+        apply("tc_order", widened);
+
+        assertEquals("bigint", columnType("tc_order", "qty"));
+        assertEquals(widened, definition("tc_order"));
+    }
+
+    @Test
+    void shouldReportDataLossWhenRegularColumnBecomesComputed() {
+        String computedNote = definition("tc_order").replace("[note] varchar(20) NULL", "[note] AS (CONVERT([varchar](20),[qty]))");
+
+        assertEquals(List.of("ALTER TABLE [dbo].[tc_order] DROP COLUMN [note];"),
+                databaseService.findDataLossOperations(List.of(table("tc_order", computedNote))));
+    }
+
+    @Test
+    void shouldReportDataLossWhenComputedColumnBecomesRegular() {
+        apply("tc_order", withComputedColumn(definition("tc_order"), "([qty]*(2))"));
+        // How 0.2.0 extracted computed columns
+        String regular = definition("tc_order").replace("[qty_x2] AS ([qty]*(2))", "[qty_x2] int NULL");
+
+        assertEquals(List.of("ALTER TABLE [dbo].[tc_order] DROP COLUMN [qty_x2];"),
+                databaseService.findDataLossOperations(List.of(table("tc_order", regular))));
+    }
+
+    /** Adds [qty_x2] AS ... as the last column of a tc_order definition. */
+    private static String withComputedColumn(String definition, String spec) {
+        String result = definition.replace("[note] varchar(20) NULL", "[note] varchar(20) NULL,\n    [qty_x2] AS " + spec);
+        assertNotEquals(definition, result, "test setup: column format");
+        return result;
+    }
+
+    private static String definitionWithoutComputed() {
+        String definition = definition("tc_order");
+        return definition.substring(0, definition.indexOf(",\n    [qty_x2]"))
+                + definition.substring(definition.indexOf(",\n", definition.indexOf("[qty_x2]")));
+    }
+
     private static void addOrderCustomerForeignKey() {
         jdbcTemplate.execute("""
                 ALTER TABLE dbo.tc_order ADD CONSTRAINT FK_tc_order_customer
