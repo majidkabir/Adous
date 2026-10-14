@@ -108,9 +108,12 @@ public class TableDefinitionReader {
                     CAST(ic.seed_value AS varchar(40)) AS identity_seed,      -- sql_variant: int, bigint or decimal
                     CAST(ic.increment_value AS varchar(40)) AS identity_increment,
                     dc.definition AS default_value,
-                    dc.name AS default_name
+                    dc.name AS default_name,
+                    cc.definition AS computed_definition,
+                    cc.is_persisted
                 FROM sys.columns c
                 LEFT JOIN sys.identity_columns ic ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                LEFT JOIN sys.computed_columns cc ON c.object_id = cc.object_id AND c.column_id = cc.column_id
                 LEFT JOIN sys.default_constraints dc ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
                 WHERE c.object_id = ?
                 ORDER BY c.column_id
@@ -118,6 +121,12 @@ public class TableDefinitionReader {
 
         return jdbcTemplate.query(columnQuery, (rs, _) -> {
             String column = rs.getString("column_name");
+            String computed = rs.getString("computed_definition");
+            if (computed != null) {
+                String definition = "[" + column + "] AS "
+                        + computedColumnSpec(computed, rs.getBoolean("is_persisted"), rs.getBoolean("is_nullable"));
+                return new Column(column, definition, null, null);
+            }
             boolean identity = rs.getBoolean("is_identity");
             String defaultValue = identity ? null : rs.getString("default_value");
 
@@ -132,6 +141,14 @@ public class TableDefinitionReader {
 
             return new Column(column, definition, defaultValue, defaultValue != null ? rs.getString("default_name") : null);
         }, objectId);
+    }
+
+    /**
+     * What follows {@code AS} in a computed column definition: the expression as SQL Server
+     * stores it, then {@code PERSISTED} and, for persisted columns, {@code NOT NULL}.
+     */
+    static String computedColumnSpec(String expression, boolean persisted, boolean nullable) {
+        return expression + (persisted ? " PERSISTED" : "") + (persisted && !nullable ? " NOT NULL" : "");
     }
 
     private List<Constraint> readConstraints(String tableName, int objectId) {

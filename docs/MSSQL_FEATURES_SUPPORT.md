@@ -25,6 +25,7 @@ These SQL Server features are fully implemented and operational in Adous.
   - Unique constraints
   - Foreign key constraints, including `ON DELETE` / `ON UPDATE` actions (with FK dependency tracking)
   - Check constraints
+  - Computed columns (`[col] AS expression [PERSISTED] [NOT NULL]`)
   - Indexes: clustered and nonclustered (unique, filtered, `INCLUDE` columns, descending keys), clustered and nonclustered columnstore; nonclustered primary keys. XML, spatial and memory-optimized indexes are not managed.
 - **Method:** Extract via `sys.tables`, `sys.columns`, `sys.indexes`, `sys.foreign_keys`, `sys.constraints`
 - **Application:** New tables are created. Existing tables get `ALTER TABLE` statements for columns, the primary key, unique / foreign key / check constraints, column defaults and indexes. Dropping a column or table needs `allowDataLoss`. Foreign keys keep their `ON DELETE` / `ON UPDATE` actions. See [Table changes](architecture.md#applying-changes).
@@ -145,19 +146,7 @@ These features are SQL Server database objects that are NOT currently supported 
 - **Estimated Complexity:** Low (straightforward metadata extraction)
 - **Priority:** Medium (advanced search feature, not all projects need this)
 
-### 2. **Computed Columns (Persisted)**
-- **Current Status:** ❌ Not Supported (columns are extracted but computed property not preserved)
-- **Reason for Omission:** Requires special handling during table creation and modification. Affects data preservation strategy.
-- **Feasibility:** 🟢 **Easy to Add**
-- **Implementation Approach:**
-  - Detect computed columns via `sys.columns` where `is_computed = 1`
-  - Extract formula via `sys.computed_columns`
-  - Include in table definition: `[ColumnName] AS formula [PERSISTED]`
-  - Handle in ALTER TABLE logic
-- **Estimated Complexity:** Low (metadata extraction + table DDL template adjustment)
-- **Priority:** Medium (useful for derived data, not commonly used in simple schemas)
-
-### 3. **XML and Spatial Indexes**
+### 2. **XML and Spatial Indexes**
 - **Current Status:** ❌ Not Supported (skipped with a warning)
 - **Reason for Omission:** They need their own DDL (`CREATE [PRIMARY] XML INDEX`, `CREATE SPATIAL INDEX` with tessellation options); rowstore and columnstore indexes are supported
 - **Feasibility:** 🟡 **Moderate to Add**
@@ -167,7 +156,7 @@ These features are SQL Server database objects that are NOT currently supported 
 - **Estimated Complexity:** Moderate
 - **Priority:** Low
 
-### 4. **Statistics Objects**
+### 3. **Statistics Objects**
 - **Current Status:** ❌ Not Supported
 - **Reason for Omission:** Statistics are auto-managed by SQL Server and typically not version-controlled
 - **Feasibility:** 🟡 **Moderate to Add**
@@ -179,7 +168,7 @@ These features are SQL Server database objects that are NOT currently supported 
 - **Estimated Complexity:** Moderate (good practices debate: should stats be version-controlled?)
 - **Priority:** Low (typically auto-managed; manual versioning is uncommon)
 
-### 5. **Constraints: Default Constraints (at table level)**
+### 4. **Constraints: Default Constraints (at table level)**
 - **Current Status:** ⚠️ Partially Supported (column-level defaults work, table-level constraints may be incomplete)
 - **Reason for Omission:** Default constraints at column level are supported but named default constraints need review
 - **Feasibility:** 🟢 **Easy to Add**
@@ -190,7 +179,7 @@ These features are SQL Server database objects that are NOT currently supported 
 - **Estimated Complexity:** Low (minor enhancements to existing code)
 - **Priority:** Low (column defaults are already supported)
 
-### 6. **Partitioned Tables and Indexes**
+### 5. **Partitioned Tables and Indexes**
 - **Current Status:** ❌ Not Supported
 - **Reason for Omission:** Requires partition function and partition scheme definition and association
 - **Feasibility:** 🟡 **Moderate to Add**
@@ -203,7 +192,7 @@ These features are SQL Server database objects that are NOT currently supported 
 - **Estimated Complexity:** Moderate (new object types + complex dependencies)
 - **Priority:** Medium (advanced feature, needed for large data scenarios)
 
-### 7. **Indexed Views (Materialized Views)**
+### 6. **Indexed Views (Materialized Views)**
 - **Current Status:** ❌ Not Supported
 - **Reason for Omission:** Views with indexes require special handling (SET options, schema binding, WITH SCHEMABINDING clause)
 - **Feasibility:** 🟡 **Moderate to Add**
@@ -215,7 +204,7 @@ These features are SQL Server database objects that are NOT currently supported 
 - **Estimated Complexity:** Moderate (requires SET option validation)
 - **Priority:** Medium (advanced optimization, not critical)
 
-### 8. **CLR Objects (Assembly-based Types, Functions, Procedures)**
+### 7. **CLR Objects (Assembly-based Types, Functions, Procedures)**
 - **Current Status:** ❌ Not Supported (CLR modules and assemblies are not extracted)
 - **Reason for Omission:** CLR objects require assembly versioning and deployment; cannot extract compiled code
 - **Feasibility:** 🟡 **Moderate to Add**
@@ -328,7 +317,7 @@ These SQL Server features CANNOT be supported by Adous due to architectural or t
 | **User-Defined Scalar Types** | ✅ Yes | - | - | With defaults and rules |
 | **Full-Text Catalogs** | ✅ Yes | - | - | Catalog infrastructure only |
 | **Full-Text Indexes** | ❌ No | Easy | Medium | Can be added |
-| **Computed Columns** | ❌ No | Easy | Medium | Can be added |
+| **Computed Columns** | ✅ Yes | - | - | Persisted or not; re-created when changed |
 | **XML / Spatial Indexes** | ❌ No | Moderate | Low | Skipped with a warning; rowstore and columnstore indexes are supported |
 | **Statistics Objects** | ❌ No | Moderate | Low | Can be added |
 | **Default Constraints** | ⚠️ Partial | Easy | Low | Minor enhancements |
@@ -348,8 +337,7 @@ These SQL Server features CANNOT be supported by Adous due to architectural or t
 
 ### Phase 1: Low-Hanging Fruit (Easy Wins)
 1. **XML and spatial indexes** - 1-2 days, low utility
-2. **Computed Columns** - 2-3 days, moderate utility
-3. **Full-Text Indexes** - 2-3 days, medium utility
+2. **Full-Text Indexes** - 2-3 days, medium utility
 
 ### Phase 2: Enhanced Scenarios (Medium Effort)
 1. **Partitioned Tables** - 3-4 days, needed for large-scale scenarios

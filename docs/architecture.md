@@ -185,6 +185,8 @@ The current table is read with the same code that produces repository definition
 | Unique, foreign key or check constraint added / removed / changed | `ADD CONSTRAINT` / `DROP CONSTRAINT` (a changed one is dropped and re-added) | kept |
 | Column default added / removed / changed | `ADD DEFAULT ... FOR` / `DROP CONSTRAINT` | kept |
 | Index added / removed / changed | `CREATE INDEX` / `DROP INDEX` (a changed one is dropped and re-created); unchanged indexes are left alone | kept |
+| Add / change computed column | `ADD [col] AS ...`; a computed column whose expression or `PERSISTED` changes, or that uses a column being altered or dropped, is dropped and added again (it moves to the end of the table). Its indexes and constraints are re-created | kept (computed) |
+| Regular column becomes computed, or the reverse | dropped and added again | **lost** (the regular column's values, or the computed column's definition), needs `allowDataLoss` |
 | Identity added, removed, or seed/increment changed on an existing column | not applied (SQL Server can't alter it in place); a warning is logged | — |
 
 Statements run in this order: drops of removed/changed constraints, defaults and indexes; column and primary key statements; then adds. Constraints are compared by name. Expressions are compared ignoring case, brackets, whitespace and the parentheses SQL Server adds.
@@ -228,7 +230,7 @@ A tag can't share its name with another tag's namespace: a deployment without a 
 ## Known Limitations
 
 - XML, spatial and memory-optimized indexes are not managed.
-- Computed columns, full-text indexes, partitioning, indexed views, CLR objects and database-level objects (users, roles, permissions) are not managed. See [MSSQL_FEATURES_SUPPORT.md](MSSQL_FEATURES_SUPPORT.md).
+- Full-text indexes, partitioning, indexed views, CLR objects and database-level objects (users, roles, permissions) are not managed. See [MSSQL_FEATURES_SUPPORT.md](MSSQL_FEATURES_SUPPORT.md).
 
 ## See Also
 

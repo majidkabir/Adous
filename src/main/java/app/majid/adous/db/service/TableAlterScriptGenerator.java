@@ -35,6 +35,7 @@ public class TableAlterScriptGenerator {
         final Set<String> droppedIndexes = new HashSet<>();                  // lower-case names
         final List<String[]> droppedReferencingForeignKeys = new ArrayList<>(); // [schema, table, fk name]
         Set<String> alteredColumns = Set.of();                               // lower-case; type or nullability changes
+        final Set<String> recreatedColumns = new HashSet<>();                // lower-case; dropped and added again (computed)
         boolean recreated;                                                   // whole table dropped and recreated
         boolean primaryKeyClauseChanged;                                     // e.g. renamed or clustered -> nonclustered
         boolean primaryKeyColumnAltered;                                     // ALTER COLUMN on a primary key column
@@ -151,6 +152,7 @@ public class TableAlterScriptGenerator {
             ColumnDefinition dbColumn = dbDef.columns.get(entry.getKey());
             ColumnDefinition gitColumn = entry.getValue();
             if (dbColumn != null && !dbColumn.isIdentity && !gitColumn.isIdentity
+                    && dbColumn.computedSpec == null && gitColumn.computedSpec == null
                     && (!dbColumn.dataType.equalsIgnoreCase(gitColumn.dataType) || dbColumn.isNullable != gitColumn.isNullable)) {
                 altered.add(entry.getKey());
             }
@@ -201,7 +203,8 @@ public class TableAlterScriptGenerator {
         List<String> addForeignKeys = new ArrayList<>();
         dbConstraints.forEach((key, constraint) -> {
             String gitClause = gitConstraints.get(key);
-            boolean blocksAlter = referencesAny(constraint.clause(), alteredColumns);
+            boolean blocksAlter = referencesAny(constraint.clause(), alteredColumns)
+                    || referencesAny(constraint.clause(), ctx.recreatedColumns);
             boolean droppedForPrimaryKey = selfReferencingDropped.contains(constraint.dbName().toLowerCase());
             boolean changed = gitClause == null || !sameSql(gitClause, constraint.clause());
             if (changed || blocksAlter) {
@@ -225,8 +228,8 @@ public class TableAlterScriptGenerator {
         for (Map.Entry<String, ColumnDefinition> entry : gitDef.columns.entrySet()) {
             TableDefinitionReader.Column dbColumn = dbColumns.get(entry.getKey());
             ColumnDefinition gitColumn = entry.getValue();
-            if (dbColumn == null || gitColumn.isIdentity) {
-                continue;
+            if (dbColumn == null || gitColumn.isIdentity || ctx.recreatedColumns.contains(entry.getKey())) {
+                continue; // re-created columns get their default with the column statement
             }
             String gitDefault = gitColumn.defaultValue;
             String dbDefault = dbColumn.defaultValue();
@@ -439,11 +442,27 @@ public class TableAlterScriptGenerator {
         }
 
         String script = generateAlterScript(tableObject);
+        // Dropping a computed column loses nothing: it is calculated from other columns. Turning one
+        // into a regular column still counts, so a definition written before computed columns were
+        // extracted (where they look like regular columns) can't silently replace them.
+        TableDefinition gitDefinition = parseCreateTableDefinition(tableObject.definition());
+        Set<String> computedColumns = new HashSet<>();
+        getCurrentTableDefinition(tableObject.schema(), tableObject.name()).columns.forEach((column, definition) -> {
+            ColumnDefinition gitColumn = gitDefinition.columns.get(column);
+            if (definition.computedSpec != null && (gitColumn == null || gitColumn.computedSpec != null)) {
+                computedColumns.add(column);
+            }
+        });
 
         List<String> statements = new ArrayList<>();
         Matcher matcher = DATA_LOSS_STATEMENT.matcher(script);
         while (matcher.find()) {
-            statements.add(matcher.group(1).trim());
+            String statement = matcher.group(1).trim();
+            Matcher dropColumn = DROP_COLUMN_NAME.matcher(statement);
+            if (dropColumn.find() && computedColumns.contains(dropColumn.group(1).toLowerCase())) {
+                continue;
+            }
+            statements.add(statement);
         }
         return statements;
     }
@@ -615,6 +634,14 @@ public class TableAlterScriptGenerator {
             column.name = columnName;
             column.originalName = originalColumnName;
 
+            Matcher computed = COMPUTED_COLUMN.matcher(remainder);
+            if (computed.matches()) {
+                column.computedSpec = computed.group(1).trim();
+                column.dataType = "";
+                column.isNullable = !NOT_NULL.matcher(column.computedSpec).find();
+                return column;
+            }
+
             // Parse data type (everything up to IDENTITY, NULL, or DEFAULT)
             // Use a more robust approach that handles parentheses correctly
             String dataType = extractDataType(remainder);
@@ -677,6 +704,10 @@ public class TableAlterScriptGenerator {
 
         return dataType.toString().trim();
     }
+
+    private static final Pattern COMPUTED_COLUMN = Pattern.compile("^AS\\b\\s*(.+)$", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern NOT_NULL = Pattern.compile("\\bNOT\\s+NULL\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DROP_COLUMN_NAME = Pattern.compile("DROP\\s+COLUMN\\s+\\[([^\\]]+)\\]", Pattern.CASE_INSENSITIVE);
 
     private static final Pattern IDENTITY_ATTRIBUTE = Pattern.compile(
             "\\bIDENTITY\\b(?:\\s*\\(\\s*([-+]?\\d+)\\s*,\\s*([-+]?\\d+)\\s*\\))?", Pattern.CASE_INSENSITIVE);
@@ -756,9 +787,12 @@ public class TableAlterScriptGenerator {
                     c.is_nullable,
                     c.is_identity,
                     CAST(ic.seed_value AS varchar(40)) AS identity_seed,
-                    CAST(ic.increment_value AS varchar(40)) AS identity_increment
+                    CAST(ic.increment_value AS varchar(40)) AS identity_increment,
+                    cc.definition AS computed_definition,
+                    cc.is_persisted
                 FROM sys.columns c
                 LEFT JOIN sys.identity_columns ic ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                LEFT JOIN sys.computed_columns cc ON c.object_id = cc.object_id AND c.column_id = cc.column_id
                 JOIN sys.tables t ON c.object_id = t.object_id
                 JOIN sys.schemas s ON t.schema_id = s.schema_id
                 WHERE s.name = ? AND t.name = ?
@@ -781,6 +815,12 @@ public class TableAlterScriptGenerator {
             column.identitySeed = rs.getString("identity_seed");
             column.identityIncrement = rs.getString("identity_increment");
             column.columnId = rs.getInt("column_id");
+            String computedDefinition = rs.getString("computed_definition");
+            if (computedDefinition != null) {
+                column.computedSpec = TableDefinitionReader.computedColumnSpec(
+                        computedDefinition, rs.getBoolean("is_persisted"), column.isNullable);
+                column.dataType = "";
+            }
 
             def.columns.put(column.name, column);
         }, schema, name);
@@ -829,7 +869,7 @@ public class TableAlterScriptGenerator {
                 .filter(col -> gitDef.columns.containsKey(col))
                 .filter(col -> {
                     ColumnDefinition colDef = dbDef.columns.get(col);
-                    return !colDef.isIdentity; // Identity columns don't count as data columns
+                    return !colDef.isIdentity && colDef.computedSpec == null; // identity and computed columns hold no data of their own
                 })
                 .count();
 
@@ -891,6 +931,38 @@ public class TableAlterScriptGenerator {
             ));
         }
 
+        // Columns dropped and added again: a computed column whose definition changes or that uses
+        // a column being altered or dropped (SQL Server can't alter either in place), and columns
+        // switching between regular and computed. Dropping a regular column here loses its data.
+        Set<String> changingColumns = new HashSet<>(ctx.alteredColumns);
+        dbDef.columns.keySet().stream().filter(col -> !gitDef.columns.containsKey(col)).forEach(changingColumns::add);
+        for (Map.Entry<String, ColumnDefinition> entry : dbDef.columns.entrySet()) {
+            ColumnDefinition dbColumn = entry.getValue();
+            ColumnDefinition gitColumn = gitDef.columns.get(entry.getKey());
+            if (gitColumn == null) {
+                continue;
+            }
+            boolean recreate = dbColumn.computedSpec != null
+                    ? gitColumn.computedSpec == null
+                        || !sameSql(dbColumn.computedSpec, gitColumn.computedSpec)
+                        || referencesAny(dbColumn.computedSpec, changingColumns)
+                    : gitColumn.computedSpec != null;
+            if (recreate) {
+                ctx.recreatedColumns.add(entry.getKey());
+            }
+        }
+        for (String columnName : ctx.recreatedColumns) {
+            String originalColumnName = dbDef.columns.get(columnName).originalName;
+            for (String indexName : getIndexesDependentOnColumn(schema, name, columnName)) {
+                statements.add("DROP INDEX IF EXISTS [%s] ON [%s].[%s];".formatted(indexName, schema, name));
+                ctx.droppedIndexes.add(indexName.toLowerCase()); // re-created from the Git definition
+            }
+            for (String constraintName : getConstraintsDependentOnColumn(schema, name, columnName)) {
+                statements.add("ALTER TABLE [%s].[%s] DROP CONSTRAINT IF EXISTS [%s];".formatted(schema, name, constraintName));
+            }
+            statements.add("ALTER TABLE [%s].[%s] DROP COLUMN [%s];".formatted(schema, name, originalColumnName));
+        }
+
         // Drop columns that exist in DB but not in Git
         for (String columnName : dbDef.columns.keySet()) {
             if (!gitDef.columns.containsKey(columnName)) {
@@ -918,8 +990,11 @@ public class TableAlterScriptGenerator {
         for (Map.Entry<String, ColumnDefinition> entry : gitDef.columns.entrySet()) {
             String columnName = entry.getKey();
             ColumnDefinition gitColumn = entry.getValue();
-            ColumnDefinition dbColumn = dbDef.columns.get(columnName);
+            ColumnDefinition dbColumn = ctx.recreatedColumns.contains(columnName) ? null : dbDef.columns.get(columnName);
 
+            if (gitColumn.computedSpec != null) {
+                continue; // added after the regular columns it may use
+            }
             if (dbColumn == null) {
                 // Add new column - use original case from Git
                 String nullability = gitColumn.isNullable ? "NULL" : "NOT NULL";
@@ -969,6 +1044,16 @@ public class TableAlterScriptGenerator {
                     logger.warn("Cannot change IDENTITY of column [{}].[{}].[{}] (database: {}, Git: {}); not applied, change it by hand",
                             schema, name, gitColumn.originalName, identitySpec(dbColumn), identitySpec(gitColumn));
                 }
+            }
+        }
+
+        // Add new and re-created computed columns
+        for (Map.Entry<String, ColumnDefinition> entry : gitDef.columns.entrySet()) {
+            ColumnDefinition gitColumn = entry.getValue();
+            if (gitColumn.computedSpec != null
+                    && (!dbDef.columns.containsKey(entry.getKey()) || ctx.recreatedColumns.contains(entry.getKey()))) {
+                statements.add("ALTER TABLE [%s].[%s] ADD [%s] AS %s;".formatted(
+                        schema, name, gitColumn.originalName, gitColumn.computedSpec));
             }
         }
 
@@ -1254,6 +1339,7 @@ public class TableAlterScriptGenerator {
         String identityIncrement;
         int columnId;
         String defaultValue;      // DEFAULT constraint value (e.g., "0", "getdate()", etc.)
+        String computedSpec;      // computed column: what follows AS (expression [PERSISTED] [NOT NULL]); null otherwise
     }
 }
 
