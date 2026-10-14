@@ -678,6 +678,9 @@ public class TableAlterScriptGenerator {
         return dataType.toString().trim();
     }
 
+    private static final Pattern IDENTITY_ATTRIBUTE = Pattern.compile(
+            "\\bIDENTITY\\b(?:\\s*\\(\\s*([-+]?\\d+)\\s*,\\s*([-+]?\\d+)\\s*\\))?", Pattern.CASE_INSENSITIVE);
+
     /**
      * Parses column attributes (IDENTITY, NULL, DEFAULT) from the attributes section.
      *
@@ -689,6 +692,19 @@ public class TableAlterScriptGenerator {
             return;
         }
 
+        // IDENTITY, IDENTITY(1,1), IDENTITY (1000, -1): taken out before splitting on whitespace
+        Matcher identity = IDENTITY_ATTRIBUTE.matcher(attributesSection);
+        if (identity.find()) {
+            column.isIdentity = true;
+            column.identitySeed = identity.group(1) != null ? new java.math.BigInteger(identity.group(1)).toString() : "1";
+            column.identityIncrement = identity.group(2) != null ? new java.math.BigInteger(identity.group(2)).toString() : "1";
+            attributesSection = (attributesSection.substring(0, identity.start()) + " "
+                    + attributesSection.substring(identity.end())).trim();
+            if (attributesSection.isEmpty()) {
+                return;
+            }
+        }
+
         String[] parts = attributesSection.split("\\s+");
         boolean foundNull = false;
 
@@ -696,25 +712,7 @@ public class TableAlterScriptGenerator {
             String part = parts[partIndex];
             String upperPart = part.toUpperCase();
 
-            if (upperPart.equals("IDENTITY")) {
-                column.isIdentity = true;
-                // Look for IDENTITY(1,1) pattern
-                if (partIndex + 1 < parts.length && parts[partIndex + 1].startsWith("(")) {
-                    String identitySpec = parts[partIndex + 1];
-                    if (identitySpec.endsWith(")")) {
-                        identitySpec = identitySpec.substring(1, identitySpec.length() - 1);
-                        String[] identityParts = identitySpec.split(",");
-                        if (identityParts.length == 2) {
-                            column.identitySeed = Integer.parseInt(identityParts[0].trim());
-                            column.identityIncrement = Integer.parseInt(identityParts[1].trim());
-                        }
-                    }
-                    partIndex++; // Skip the (1,1) part
-                } else {
-                    column.identitySeed = 1;
-                    column.identityIncrement = 1;
-                }
-            } else if (upperPart.equals("NOT")) {
+            if (upperPart.equals("NOT")) {
                 if (partIndex + 1 < parts.length && parts[partIndex + 1].equalsIgnoreCase("NULL")) {
                     column.isNullable = false;
                     foundNull = true;
@@ -757,8 +755,8 @@ public class TableAlterScriptGenerator {
                     c.scale,
                     c.is_nullable,
                     c.is_identity,
-                    ISNULL(ic.seed_value, 0) AS identity_seed,
-                    ISNULL(ic.increment_value, 0) AS identity_increment
+                    CAST(ic.seed_value AS varchar(40)) AS identity_seed,
+                    CAST(ic.increment_value AS varchar(40)) AS identity_increment
                 FROM sys.columns c
                 LEFT JOIN sys.identity_columns ic ON c.object_id = ic.object_id AND c.column_id = ic.column_id
                 JOIN sys.tables t ON c.object_id = t.object_id
@@ -780,8 +778,8 @@ public class TableAlterScriptGenerator {
             );
             column.isNullable = rs.getBoolean("is_nullable");
             column.isIdentity = rs.getBoolean("is_identity");
-            column.identitySeed = rs.getInt("identity_seed");
-            column.identityIncrement = rs.getInt("identity_increment");
+            column.identitySeed = rs.getString("identity_seed");
+            column.identityIncrement = rs.getString("identity_increment");
             column.columnId = rs.getInt("column_id");
 
             def.columns.put(column.name, column);
@@ -925,7 +923,9 @@ public class TableAlterScriptGenerator {
             if (dbColumn == null) {
                 // Add new column - use original case from Git
                 String nullability = gitColumn.isNullable ? "NULL" : "NOT NULL";
-                String identity = gitColumn.isIdentity ? " IDENTITY(1,1)" : "";
+                String identity = gitColumn.isIdentity
+                        ? " IDENTITY(%s,%s)".formatted(gitColumn.identitySeed, gitColumn.identityIncrement)
+                        : "";
                 String defaultClause = gitColumn.defaultValue != null ? " DEFAULT " + gitColumn.defaultValue : "";
 
                 statements.add(String.format(
@@ -960,10 +960,14 @@ public class TableAlterScriptGenerator {
                         // Note: Indexes will be recreated from Git definition at the end
                         // The Git definition contains the CREATE INDEX statements which will be
                         // applied after all column alterations are complete
-                    } else if (dbColumn.isIdentity != gitColumn.isIdentity) {
-                        logger.warn("Cannot alter identity property for column {}.{}.{} - manual intervention required",
-                                schema, name, columnName);
                     }
+                }
+                if (dbColumn.isIdentity != gitColumn.isIdentity
+                        || (gitColumn.isIdentity && (!Objects.equals(dbColumn.identitySeed, gitColumn.identitySeed)
+                                || !Objects.equals(dbColumn.identityIncrement, gitColumn.identityIncrement)))) {
+                    // SQL Server can't add, remove or change IDENTITY on an existing column
+                    logger.warn("Cannot change IDENTITY of column [{}].[{}].[{}] (database: {}, Git: {}); not applied, change it by hand",
+                            schema, name, gitColumn.originalName, identitySpec(dbColumn), identitySpec(gitColumn));
                 }
             }
         }
@@ -987,6 +991,10 @@ public class TableAlterScriptGenerator {
         }
 
         return statements;
+    }
+
+    private static String identitySpec(ColumnDefinition column) {
+        return column.isIdentity ? "IDENTITY(%s,%s)".formatted(column.identitySeed, column.identityIncrement) : "no IDENTITY";
     }
 
     /**
@@ -1242,8 +1250,8 @@ public class TableAlterScriptGenerator {
         String dataType;
         boolean isNullable;
         boolean isIdentity;
-        int identitySeed;
-        int identityIncrement;
+        String identitySeed;      // as written, e.g. "1" or "1000000000000"; null if not an identity
+        String identityIncrement;
         int columnId;
         String defaultValue;      // DEFAULT constraint value (e.g., "0", "getdate()", etc.)
     }

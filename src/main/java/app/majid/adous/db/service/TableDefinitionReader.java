@@ -105,8 +105,8 @@ public class TableDefinitionReader {
                     c.scale,
                     c.is_nullable,
                     c.is_identity,
-                    ISNULL(ic.seed_value, 0) AS identity_seed,
-                    ISNULL(ic.increment_value, 0) AS identity_increment,
+                    CAST(ic.seed_value AS varchar(40)) AS identity_seed,      -- sql_variant: int, bigint or decimal
+                    CAST(ic.increment_value AS varchar(40)) AS identity_increment,
                     dc.definition AS default_value,
                     dc.name AS default_name
                 FROM sys.columns c
@@ -125,7 +125,7 @@ public class TableDefinitionReader {
                     formatDataType(rs.getString("data_type"), rs.getInt("max_length"),
                             rs.getInt("precision"), rs.getInt("scale")) +
                     (identity
-                            ? " IDENTITY(" + rs.getInt("identity_seed") + "," + rs.getInt("identity_increment") + ")"
+                            ? " IDENTITY(" + rs.getString("identity_seed") + "," + rs.getString("identity_increment") + ")"
                             : "") +
                     (rs.getBoolean("is_nullable") ? " NULL" : " NOT NULL") +
                     (defaultValue != null ? " DEFAULT " + defaultValue : "");
